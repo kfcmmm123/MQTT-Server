@@ -8,19 +8,20 @@ Each node manages a specific subsystem — **Pumps**, **Ultrasonic Drivers**, or
 
 ## 📋 Features
 
-- ✅ Unified **MQTT communication** for all devices  
-- 🔌 Independent **ESP32-POE-ISO nodes** with Ethernet  
-- 🔥 **PID temperature control** with thermistors and dual SSRs  
-- 💧 **Quad relay pump** control for fluid handling  
-- 🔊 **Ultrasonic relay** driver control  
-- 🧠 **Python control script (`iot_mqtt.py`)** for all subsystems  
-- 🛡️ **Safety protection**: over-temp rate brake, startup delay, fail-safe OFF  
-- 🌡️ Real-time telemetry publishing (temperature, states, heartbeat)
+-  Unified **MQTT communication** for all devices  
+-  Independent **ESP32-POE-ISO nodes** with Ethernet  
+-  **PID temperature control** with thermistors and dual SSRs  
+-  **Quad relay pump** control for fluid handling  
+-  **Ultrasonic relay** driver control  
+-  **Python control script (`iot_mqtt.py`)** for all subsystems  
+-  **Safety protection**: over-temp rate brake, startup delay, fail-safe OFF  
+-  Real-time telemetry publishing (temperature, states, heartbeat)
 
 ---
 
 ## 🧭 System Architecture
 
+```text
                 ┌─────────────────────────────┐
                 │         MQTT Broker         │
                 │     (Mosquitto on PC)       │
@@ -36,6 +37,7 @@ Each node manages a specific subsystem — **Pumps**, **Ultrasonic Drivers**, or
 │ ultra/01 → Qwiic Quad Relay (2 ultrasonic drivers)                 │
 │ heat/01 → Dual SSR + ADS1015 + thermistors + PID + safety          │
 └────────────────────────────────────────────────────────────────────┘
+```
 
 Each node runs an MQTT client, subscribes to control topics (`cmd/#`),  
 and publishes telemetry (`state/#`, `temp/#`, `status`, `heartbeat`).
@@ -44,14 +46,20 @@ and publishes telemetry (`state/#`, `temp/#`, `status`, `heartbeat`).
 
 ## 📡 MQTT Topic Structure
 
-| Topic | Direction | Example | Description |
-|--------|------------|----------|-------------|
-| `<base>/cmd/<n>` | → ESP | `heat/01/cmd/1 → SET:42` | Commands |
-| `<base>/state/<n>` | ← ESP | `pumps/01/state/3 → ON` | Relay states |
-| `<base>/temp/<n>` | ← ESP | `heat/01/temp/1 → 39.6` | Temperature feedback |
-| `<base>/target/<n>` | ← ESP | `heat/01/target/1 → 42.0` | PID setpoint |
-| `<base>/status` | ← ESP | `ONLINE` / `OFFLINE` | Connection status |
-| `<base>/heartbeat` | ← ESP | `"1"` every 15 s | Keep-alive signal |
+| Topic pattern                           | Pub/Sub | Who → Who    | Example payload                                   | Purpose                           |
+| --------------------------------------- | :-----: | ------------ | ------------------------------------------------- | --------------------------------- |
+| `<base>/cmd/<n>`                        | **Pub** | **PC → ESP** | `SET:42` · `ON` · `ON:1500` · `PWM:35` · `PID:ON` | Control channel per channel `<n>` |
+| `<base>/state/<n>`                      | **Sub** | **ESP → PC** | `ON` · `OFF` *(retained)*                         | Relay/actuator state per channel  |
+| `<base>/temp/<n>`                       | **Sub** | **ESP → PC** | `39.6`                                            | Temperature (heater node)         |
+| `<base>/target/<n>` or `<base>/set/<n>` | **Sub** | **ESP → PC** | `42.0` *(retained)*                               | PID setpoint (heater)             |
+| `<base>/status`                         | **Sub** | **ESP → PC** | `ONLINE` / `OFFLINE` *(retained)*                 | Node availability                 |
+| `<base>/heartbeat`                      | **Sub** | **ESP → PC** | `1` every 15 s                                    | Keep-alive                        |
+
+Typical bases:
+
+-  Pumps node: pumps/01
+-  Ultrasonic node: ultra/01
+-  Heater node: heat/01
 
 ---
 
@@ -62,68 +70,153 @@ and publishes telemetry (`state/#`, `temp/#`, `status`, `heartbeat`).
 It uses the `paho-mqtt` v2 client API to send commands and monitor telemetry.
 
 ### Classes
-| Class | Device | Description |
-|--------|---------|-------------|
-| `PumpMQTT` | Pumps | Controls 4-channel Qwiic Quad Relay |
-| `UltraMQTT` | Ultrasonic | Controls 2-channel ultrasonic drivers |
-| `HeatMQTT` | Heaters | Controls dual SSR heater node with PID + feedback |
+
+| Class       | Device     | What it does                          |
+| ----------- | ---------- | ------------------------------------- |
+| `PumpMQTT`  | Pumps      | 4-channel Qwiic Quad Relay control    |
+| `UltraMQTT` | Ultrasonic | 2-channel Qwiic Single relay control  |
+| `HeatMQTT`  | Heaters    | Dual SSR + PID + thermistor feedback  |
+
+### ESP Command Set (payloads sent to <base>/cmd/<n>)
+
+**Pumps** (pumps/01)
+
+- ON — turn channel n on
+- OFF — turn channel n off
+- ON:<ms> — turn on, auto-off after <ms> milliseconds
+
+**Ultrasonic** (ultra/01)
+
+- ON, OFF, ON:<ms> — same semantics as pumps
+
+**Heaters** (heat/01)
+- ON, OFF — manual on/off (PID is disabled for that channel)
+- ON:<ms> — timed on
+- PWM:<0–100> — manual slow-PWM duty (%) for channel (disables PID)
+- SET:<tempC> — set target setpoint (°C) and publish it on target/<n>
+- PID:ON — enable PID control for channel <n>
+- PID:OFF — disable PID control (forces PWM=0 → OFF)
+- GET — request an immediate temperature publish on temp/<n>
+
+### Example Topic Map 
+
+- **Pumps**
+
+  - pumps/01/cmd/1 ← ON, ON:1500, OFF
+  - pumps/01/state/1 → ON (retained)
+  - pumps/01/status → ONLINE
+  - pumps/01/heartbeat → 1
+
+- **Ultrasonic**
+
+  - ultra/01/cmd/2 ← ON:1500
+  - ultra/01/state/2 → ON (retained)
+
+- **Heaters**
+
+  - heat/01/cmd/1 ← SET:42, PID:ON
+  - heat/01/target/1 → 42.0 (retained)
+  - heat/01/temp/1 → 39.6
+  - heat/01/state/1 → ON (retained)
+  - heat/01/status → ONLINE
+
+### Minimal “Cheat Sheet” of High-Level Calls
+
+```python
+
+# Pumps
+pumps.on(ch)                 # ch ∈ {1..4}
+pumps.on(ch, ms)            # timed on
+pumps.off(ch)
+pumps.toggle(ch)            # reads retained state and flips it
+pumps.status()              # shows status/heartbeat/state/1..4
+
+# Ultrasonic
+ultra.on(ch)                # ch ∈ {1,2}
+ultra.on_for(ch, ms)
+ultra.off(ch)
+ultra.status()
+
+# Heaters
+heat.set_base_temp(ch, 42.0)   # sets target (retained)
+heat.set_pwm(ch, 35)           # manual PWM %, disables PID
+# (If you prefer helpers)
+# heat.pid_on(ch); heat.pid_off(ch)
+
+temp = heat.get_base_temp(ch)  # requests GET, waits for temp/<ch>
+heat.status()
+
+```
 
 ### Example Usage
 ```python
-from iot_mqtt import PumpMQTT, UltraMQTT, HeatMQTT
+# iot_mqtt_demo.py
 import time
+from iot_mqtt import start_broker_if_needed, stop_broker
+from iot_mqtt import PumpMQTT, UltraMQTT, HeatMQTT
 
-# Start Server 
-proc = start_broker_if_needed()  # only if you don’t run the Windows service
+# (Optional) start local Mosquitto on Windows if not already running
+proc = start_broker_if_needed()  # comment out if you already have a broker
 
-# Connect devices
-broker = "192.168.0.100"
+# Create clients
+pumps = PumpMQTT(broker="192.168.0.101", username="pico1",  password="pump",
+                 base_topic="pumps/01", client_id="pyctl-pumps")
+ultra = UltraMQTT(broker="192.168.0.101", username="ultra1", password="ultra",
+                  base_topic="ultra/01", client_id="pyctl-ultra")
+heat  = HeatMQTT(broker="192.168.0.101", username="heat1",  password="heat",
+                 base_topic="heat/01",  client_id="pyctl-heat")
 
-pumps = PumpMQTT(broker=broker, username="pump1", password="pump",
-                base_topic="pumps/01", client_id="pyctl-pumps")
-ultra = UltraMQTT(broker=broker, username="ultra1", password="ultra",
-                base_topic="ultra/01", client_id="pyctl-ultra")
-heat = HeatMQTT(broker=broker, username="heat1", password="heat",
-                base_topic="heat/01", client_id="pyctl-heat")
-
-# Connect + Start loop
-heat.ensure_connected()
+# Connect + start background loops
 pumps.ensure_connected()
 ultra.ensure_connected()
-time.sleep(1)  # wait for connections to settle
+heat.ensure_connected()
+time.sleep(1)  # let subscriptions settle
 
-# Control examples
+# Show live status from each node for a couple seconds
+pumps.status(seconds=2.0)
+ultra.status(seconds=2.0)
+heat.status(seconds=2.0)
 
-# Pump demo
-pumps.on(1)                 # Start pump 1
-pumps.on(1, 2000)           # Run pump 1 for 2s
-ultra.on_for(2, 1500)       # Trigger ultrasonic 2 for 1.5s
-heat.set_base_temp(1, 42.0) # Set heater 1 target 42°C
-heat._publish("cmd/1", "PID:ON")
+# ---- Control examples ----
 
+# Pumps
+pumps.on(1)                 # pump 1 ON
+time.sleep(1)
+pumps.on(1, 2000)           # pump 1 ON for 2 s (auto-off)
+time.sleep(2.5)
 
-# Heater demo
-heat.set_target(1, 42.0)         # set target to 42C (ESP retains on set/1)
-heat.pid_on(1)                   # enable PID loop on ESP
-# actively request a reading now:
-try:
-    for i in range(200):
-        t = heat.get_base_temp(1, timeout_s=5.0)
-        print("Temp(ch1) =", t)
-        time.sleep(1)
-except TimeoutError as e:
-    print("Temp read timeout:", e)
+# Ultrasonic
+ultra.on_for(2, 1500)       # ultrasonic ch2 ON for 1.5 s
+time.sleep(2)
 
-heat.pid_off(1)                  # stop PID
-heat.set_pwm(1, 0)               # ensure PWM is off
-heat.off(1)                      # ensure relay is off
+# Heaters (PID demo)
+heat.set_base_temp(1, 42.0) # tells ESP to set target 42 °C (retained on target/1)
+heat._publish("cmd/1", "PID:ON")  # or: heat.pid_on(1) if you expose a helper
 
-for _ in range(10):
-    print("CH1 Temp:", heat.get_base_temp(1))
+# Read temperature for ~30 s
+for _ in range(30):
+    try:
+        t = heat.get_base_temp(1, timeout_s=2.0)  # requests GET → reads temp/1
+        print("Heater1 Temp =", t)
+    except TimeoutError:
+        print("Temp read timeout")
     time.sleep(1)
 
-# Shutdown
+# Stop PID and ensure OFF
 heat._publish("cmd/1", "PID:OFF")
-pumps.off(1)
-ultra.off(2)
+heat.set_pwm(1, 0)
+heat.off(1)
+
+# Cleanup
+pumps.disconnect()
+ultra.disconnect()
+heat.disconnect()
+stop_broker(proc)
+
+```
+
+> **Notes** 
+> - Replace `192.168.0.101` with your broker’s IP (your PC if Mosquitto runs there).
+> - For long-running apps, prefer non-blocking UI or a scheduler rather than time.sleep.
+
 
