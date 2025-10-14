@@ -46,15 +46,27 @@ Each node manages a specific subsystem — **Pumps**, **Ultrasonic Drivers**, or
 ## Repository Structure
 
 ```
-├── iot_mqtt.py                # Python control library
-├── iot_mqtt_demo.py           # Example usage script
-├── Arduino/
-│   ├── pumps_node.ino         # 4-channel pump controller
-│   ├── ultra_node.ino         # 2-channel ultrasonic controller
-│   └── heat_node.ino          # 2-channel heater + PID + safety
-├── README.md                  # (this file)
-└── assets/
-    └── architecture.png       # system diagram (optional)
+├── iot_mqtt.py                 # Unified Python MQTT control library
+├── MQTT_Demo.ipynb             # Example usage notebook (Jupyter)
+│
+├── Pump_client/
+│   ├── Pump_client.ino         # 4-channel pump controller (Qwiic Quad Relay)
+│   └── README.md               # Pump system documentation
+│
+├── Ultrasonic_client/
+│   ├── Ultrasonic_client.ino   # 2-channel ultrasonic driver controller
+│   └── README.md               # Ultrasonic system documentation
+│
+├── Heater_client/
+│   ├── Heater_client.ino       # 2-channel heater controller (PID + safety)
+│   └── README.md               # Heater system documentation
+│
+├── mosquitto_config/
+│   ├── mosquitto.conf          # Mosquitto broker configuration
+│   └── aclfile.txt             # Access control list (ACL) file
+│
+└── README.md                   # Main project documentation (this file)
+
 ```
 
 ---
