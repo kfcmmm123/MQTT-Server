@@ -1,0 +1,67 @@
+#################################################################
+#  Mosquitto Access Control List (ACL)
+#  Organized by user / device category
+#  - 'read'  : allows subscribing / receiving
+#  - 'write' : allows publishing
+#  - 'readwrite' = both
+#################################################################
+
+#################################################################
+# [1]  Admin user(s)
+#################################################################
+user admin
+topic readwrite #
+
+# Admin has unrestricted access to all topics
+# You can use this account for testing or dashboards
+
+
+#################################################################
+# [2]  Pump controllers (ESP32-POE-ISO)
+#################################################################
+user pump1
+# Limit this user strictly to pump topics
+topic readwrite pumps/01/#
+
+
+#################################################################
+# [3]  Ultrasonic controllers
+#################################################################
+user ultra1
+# This device only works under ultra/01 topic namespace
+topic readwrite ultra/01/#
+
+
+#################################################################
+# [4]  Ultrasonic controllers
+#################################################################
+user heat1
+# This device only works under ultra/01 topic namespace
+topic readwrite heat/01/#
+
+
+#################################################################
+# [5]  Python control clients (if separated by user)
+#################################################################
+user pyctl
+topic readwrite pumps/01/#
+topic readwrite ultra/01/#
+topic readwrite heat/01/#
+
+
+#################################################################
+# [6]  Monitor (read only) 
+#################################################################
+user monitor
+topic read #
+
+
+#################################################################
+
+# Notes:
+# - '#' matches all subtopics.
+# - Each section starts with 'user <name>'.
+# - You can freely mix read / write / readwrite lines.
+# - The first matching rule encountered applies.
+# - If allow_anonymous false → any client must use a defined user/pass.
+#################################################################

@@ -100,29 +100,4 @@ h.disconnect()
 * “Safety brake” triggers immediately: loosen the rate-of-rise limit or verify ADC wiring (floating input can look like fast ΔT).
 * No ADS detected: check I²C address, pull-ups (Qwiic has them), cable.
 
----
 
-# Common Setup Notes
-
-## Broker
-
-* Use a local Mosquitto broker (PC or Pi). Default port: **1883**.
-* Your Windows helper in `iot_mqtt.py` can **start** Mosquitto automatically (optional).
-
-## Credentials
-
-* Use distinct usernames per node if you like (e.g., `pump1`, `ultra1`, `heat1`) or reuse one. Align with broker config.
-
-## Network
-
-* All nodes and PC must share the same LAN/VLAN. If Pi has both Wi-Fi and Ethernet, ensure routing doesn’t isolate topics.
-
-## Safety & Power
-
-* Fuse mains devices; use SSR for AC switching where appropriate.
-* Keep sensor wiring away from mains and heater cables.
-* Add **TVS + bulk + ceramic** across 12 V rails; flyback diodes across inductive DC loads.
-
----
-
-If you want, I can auto-generate per-sketch **“Quick Wiring”** diagrams (ASCII or SVG) and a tiny **topic test script** you can paste into the repo’s `/tools` folder to sanity-check each node.

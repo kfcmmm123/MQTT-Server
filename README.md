@@ -44,6 +44,30 @@ and publishes telemetry (`state/#`, `temp/#`, `status`, `heartbeat`).
 
 ---
 
+## Common Setup Notes
+
+### Broker
+
+* Use a local Mosquitto broker (PC or Pi). Default port: **1883**.
+* Your Windows helper in `iot_mqtt.py` can **start** Mosquitto automatically (optional).
+
+### Credentials
+
+* Use distinct usernames per node if you like (e.g., `pump1`, `ultra1`, `heat1`) or reuse one. Align with broker config.
+
+### Network
+
+* All nodes and PC must share the same LAN/VLAN. If Pi has both Wi-Fi and Ethernet, ensure routing doesn’t isolate topics.
+
+### Safety & Power
+
+* Fuse mains devices; use SSR for AC switching where appropriate.
+* Keep sensor wiring away from mains and heater cables.
+* Add **TVS + bulk + ceramic** across 12 V rails; flyback diodes across inductive DC loads.
+
+---
+
+
 ## 📡 MQTT Topic Structure
 
 | Topic pattern                           | Pub/Sub | Who → Who    | Example payload                                   | Purpose                           |
@@ -120,7 +144,7 @@ It uses the `paho-mqtt` v2 client API to send commands and monitor telemetry.
   - heat/01/state/1 → ON (retained)
   - heat/01/status → ONLINE
 
-### Minimal “Cheat Sheet” of High-Level Calls
+### “Cheat Sheet” of High-Level Calls
 
 ```python
 
