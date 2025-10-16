@@ -12,7 +12,6 @@ Each node manages a specific subsystem — **Pumps**, **Ultrasonic Drivers**, or
 * [Features](#features)
 * [Repository Structure](#repository-structure)
 * [System Architecture](#system-architecture)
-* [Bill of Materials (BOM)](#bill-of-materials-bom)
 * [Setup](#setup)
 
   * [Broker (Mosquitto)](#broker-mosquitto)
@@ -24,6 +23,7 @@ Each node manages a specific subsystem — **Pumps**, **Ultrasonic Drivers**, or
   * [Classes](#classes)
   * [Command Reference (payloads to `<base>/cmd/<n>`)](#command-reference-payloads-to-basecmdn)
 * [Example Usage](#example-usage)
+* [Bill of Materials (BOM)](#bill-of-materials-bom)
 * [Wiring & Safety Notes](#wiring--safety-notes)
 * [Troubleshooting](#troubleshooting)
 * [License](#license)
@@ -93,41 +93,6 @@ Each node manages a specific subsystem — **Pumps**, **Ultrasonic Drivers**, or
 ```
 
 Each node runs an MQTT client, subscribes to control topics (`<base>/cmd/#`), and publishes telemetry (`state/#`, `temp/#`, `status`, `heartbeat`).
-
----
-
-## Bill of Materials (BOM)
-
-### Server
-
-* **Ethernet Switch:** [Netgear GS308EPP 8-Port PoE+](https://www.amazon.ca/NETGEAR-Gigabit-Ethernet-Managed-GS308EP/dp/B08MBFLMDC/ref=sr_1_3_sspa?crid=1D3BBWKKI60KR&keywords=ethernet+switch&qid=1760448019&sr=8-3-spons&th=1) — Managed Gigabit PoE+ switch (8 ports, 123 W). Powers and networks all ESP32-POE-ISO nodes.
-* **Ethernet Cables:** Cat5e / Cat6 (PoE-compatible), one per node.
-
-### ESP Nodes
-
-* **MCU:** [Olimex ESP32-POE-ISO](https://www.digikey.ca/en/products/detail/olimex-ltd/ESP32-POE-ISO-EA/10258722) (PoE power, galvanic isolation, Ethernet + I²C + GPIO).
-
-### Pumps Node
-
-* **Pumps:** [Kamoer KPHM100](https://www.kamoer.com/us/product/detail.html?id=10021) (12 V micro peristaltic).
-* **Relay Board:** [SparkFun Qwiic Quad Relay](https://www.sparkfun.com/sparkfun-qwiic-quad-relay.html) (4-ch I²C).
-* **Protection:** Flyback diodes (1N4007) across each DC pump.
-* **Power:** 12 V DC.
-
-### Ultrasonic Node
-
-* **Driver/Transducer:** [120 W 40 kHz Driver + Transducer Kit](https://www.amazon.ca/Dacvgog-Ultrasonic-Transducer-Cleaning-Machines/dp/B0BC7Q8DY1) (AC-driven ultrasonic cleaning module).
-* **Relay:** [SparkFun Qwiic Single Relay](https://www.sparkfun.com/sparkfun-qwiic-single-relay.html) (I²C).
-* **Power:** 110–120 VAC.
-
-### Heater Node
-
-* **Heater:** [Aluminum Heater 60 × 28 × 5 mm](https://www.ptcyidu.com/heating-element-hair-dryer-accessories-12-220v-60-270-degrees-coffee-maker-ptc-heaters-with-aluminum-shell-60x28x5mm340) (12–220 V variants).
-* **Thermistors:** 10 kΩ NTC (one per channel).
-* **Divider Resistors:** 10 kΩ (1%) (one per channel).
-* **ADC:** [Adafruit ADS1015](https://www.adafruit.com/product/1083?srsltid=AfmBOop1jAaBsJfcPm18nTynSNd855LKGRBNVP8QOJirZOHIC3O8EmZ_) (I²C, 4-ch, 12-bit).
-* **Relay:** [SparkFun Qwiic Dual Solid-State Relay](https://www.sparkfun.com/sparkfun-qwiic-dual-solid-state-relay.html) (2-ch).
-* **DC Rail Protection:** 1000 µF electrolytic + 0.1 µF ceramic + TVS diode across 12 V.
 
 ---
 
@@ -301,6 +266,34 @@ heat.off(1)
 pumps.disconnect(); ultra.disconnect(); heat.disconnect()
 stop_broker(proc)
 ```
+
+---
+
+## Bill of Materials (BOM)
+
+| Category                 | Item                       | Description                                                        | Example / Source                                                                                                                                                  |
+| ------------------------ | -------------------------- | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Server**               | Ethernet Switch            | 8-port Gigabit PoE+ switch (123 W budget)                          | [Netgear GS308EPP](https://www.amazon.ca/NETGEAR-Gigabit-Ethernet-Managed-GS308EP/dp/B08MBFLMDC)                                                                  |
+|                          | Ethernet Cables            | Cat5e / Cat6 PoE-compatible Ethernet cables (one per node)         | —                                                                                                                                                                 |
+| **ESP Node**             | Main Controller            | PoE-enabled microcontroller with Ethernet + isolation + I²C + GPIO | [Olimex ESP32-POE-ISO](https://www.digikey.ca/en/products/detail/olimex-ltd/ESP32-POE-ISO-EA/10258722)                                                            |
+| **Pumps Node**           | Peristaltic Pump           | 12 V micro peristaltic pump for fluid dispensing                   | [Kamoer KPHM100](https://www.kamoer.com/us/product/detail.html?id=10021)                                                                                          |
+|                          | Relay Board                | 4-channel I²C relay for DC load control                            | [SparkFun Qwiic Quad Relay](https://www.sparkfun.com/sparkfun-qwiic-quad-relay.html)                                                                              |
+| **Ultrasonic Node**      | Driver + Transducer        | 120 W / 40 kHz AC ultrasonic cleaning driver + transducer          | [Dacvgog Kit (Amazon)](https://www.amazon.ca/Dacvgog-Ultrasonic-Transducer-Cleaning-Machines/dp/B0BC7Q8DY1)                                                       |
+|                          | Relay Board                | Two I²C single relays for AC driver switching                      | [SparkFun Qwiic Single Relay](https://www.sparkfun.com/sparkfun-qwiic-single-relay.html)                                                                          |
+| **Heater Node**          | PTC Heater                 | Aluminum-clad PTC heater (12 – 220 V options)                      | [PTC 60×28×5 mm](https://www.ptcyidu.com/heating-element-hair-dryer-accessories-12-220v-60-270-degrees-coffee-maker-ptc-heaters-with-aluminum-shell-60x28x5mm340) |
+|                          | Thermistor                 | 10 kΩ NTC temperature sensor (1 per channel)                       | [EPCOS B57560G104F](https://www.digikey.ca/en/products/detail/epcos-tdk-electronics/B57560G104F/1659138)                                                          |
+|                          | Divider Resistor           | 10 kΩ 1% precision resistor (for voltage divider)                  | [Yageo RC1206FR-0710KL](https://www.digikey.ca/en/products/detail/yageo/RC1206FR-0710KL/731456)                                                                   |
+|                          | ADC                        | 12-bit / 4-channel I²C ADC for thermistor inputs                   | [Adafruit ADS1015](https://www.adafruit.com/product/1083)                                                                                                         |
+|                          | Solid-State Relay          | Dual SSR module for heater control                                 | [SparkFun Qwiic Dual Solid-State Relay](https://www.sparkfun.com/sparkfun-qwiic-dual-solid-state-relay.html)                                                      |
+| **Power and Protection** | Power Supply               | 12 V DC regulated PSU (≥ 5 A depending on pump count)              | [Mean Well EDR-120-12](https://www.digikey.ca/en/products/detail/mean-well-usa-inc/EDR-120-12/7702913)                                                            |
+|                          | Capacitor ( Electrolytic ) | 1000 µF / 25 V for DC rail stabilization                           | —                                                                                                                                                                 |
+|                          | Capacitor ( Ceramic )      | 0.1 µF decoupling capacitor                                        | —                                                                                                                                                                 |
+|                          | TVS Diode                  | 12 V transient voltage suppressor (600 W)                          | [Littelfuse SMBJ12A](https://www.digikey.ca/en/products/detail/littelfuse-inc/SMBJ12A/1049868)                                                                    |
+|                          | MOV                        | 470 V 4.5 kA Varistor                                              | [Bourns MOV-14D471K](https://www.digikey.ca/en/products/detail/bourns-inc/MOV-14D471K/2799087)                                                                    |
+|                          | E-Stop Switch              | Normally closed emergency stop button                              | [Omron A22NE-M-P202-N-B](https://www.digikey.ca/en/products/detail/omron-automation-and-safety/A22NE-M-P202-N-B/9190908)                                         |
+|                          | Contactor                  | Contactor 3 Pole 12 A 120 VAC                                      | [Schneider Electric DPE12G7](https://www.digikey.ca/en/products/detail/schneider-electric/DPE12G7/15858518)                                                       |
+
+**Full Digi-Key Cart:** [Complete Digi-Key Parts List](https://www.digikey.ca/en/mylists/list/V301MIOCVD)
 
 ---
 
