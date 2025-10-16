@@ -135,9 +135,41 @@ Each node runs an MQTT client, subscribes to control topics (`<base>/cmd/#`), an
 
 ### Broker (Mosquitto)
 
-* Install Mosquitto on your **PC** (Windows/Linux/macOS) or a **Raspberry Pi**.
-* Default listener: **TCP 1883**.
-* Optional: `iot_mqtt.py` can auto-start Mosquitto on Windows (`start_broker_if_needed()`).
+1. **Install Mosquitto** on your **PC** (Windows, Linux, or macOS) or a **Raspberry Pi**.
+
+   * Default listener: **TCP 1883**
+   * You can download it from [https://mosquitto.org/download/](https://mosquitto.org/download/)
+
+2. **Start the broker:**
+
+   * **Option A — Manual:**
+     Run the `mosquitto.exe` executable from PowerShell or Terminal:
+
+     ```bash
+     mosquitto -v
+     ```
+   * **Option B — Auto-launch via Python:**
+     Use the helper in `iot_mqtt.py` to start Mosquitto automatically on Windows:
+
+   > It launches `mosquitto.exe` via Python’s `subprocess` — make sure to **edit the executable path** of `mosq_exe` and `mosq_conf` in the script to match your Mosquitto installation directory.
+
+     ```python
+     from iot_mqtt import start_broker_if_needed
+     proc = start_broker_if_needed()
+     ```
+
+     You can do this either in a standard Python session or in Jupyter (`MQTT_Demo.ipynb`).
+
+3. Confirm that the broker is running:
+
+   * Default port: **1883**
+   * Test connection using:
+
+     ```bash
+     mosquitto_sub -h 127.0.0.1 -t test -v
+     mosquitto_pub -h 127.0.0.1 -t test -m "hello"
+     ```
+   * You should see `test hello` echoed back.
 
 ### ESP32 Nodes
 
@@ -145,7 +177,7 @@ Each node runs an MQTT client, subscribes to control topics (`<base>/cmd/#`), an
 
   * `pumps_node.ino` → base `pumps/01`
   * `ultra_node.ino` → base `ultra/01`
-  * `heat_node.ino` → base `heat/01` (PID + safety + thermistor/ADS1015)
+  * `heat_node.ino` → base `heat/01` 
 * Edit Wi-Fi/Ethernet/MQTT credentials and base topics in each sketch if needed.
 * Connect I²C (Qwiic), relays, pumps/heaters/ultrasonic hardware.
 
@@ -156,7 +188,6 @@ Each node runs an MQTT client, subscribes to control topics (`<base>/cmd/#`), an
   ```bash
   pip install "paho-mqtt>=2.0.0"
   ```
-* Use `iot_mqtt.py` from your PC to command and monitor all nodes.
 
 ---
 
