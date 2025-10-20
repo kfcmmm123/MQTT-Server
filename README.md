@@ -50,15 +50,16 @@ Each node manages a specific subsystem — **Pumps**, **Ultrasonic Drivers**, or
 ├── MQTT_Demo.ipynb             # Example usage notebook (Jupyter)
 │
 ├── Pump_client/
-│   ├── Pump_client.ino         # 4-channel pump controller (Qwiic Quad Relay)
+│   ├── Pump_client.ino         # 4-channel quad relay pump controller (Qwiic Quad Relay)
 │   └── README.md               # Pump system documentation
 │
 ├── Ultrasonic_client/
-│   ├── Ultrasonic_client.ino   # 2-channel ultrasonic driver controller
+│   ├── Ultrasonic_single_client.ino   # 2 single relay ultrasonic driver controller
+│   ├── Ultrasonic_quad_client.ino   # 2-channel quad relay ultrasonic driver controller
 │   └── README.md               # Ultrasonic system documentation
 │
 ├── Heater_client/
-│   ├── Heater_client.ino       # 2-channel heater controller (PID + safety)
+│   ├── Heater_client.ino       # 2-channel SSR heater controller (PID + safety)
 │   └── README.md               # Heater system documentation
 │
 ├── mosquitto_config/

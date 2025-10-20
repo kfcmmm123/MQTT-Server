@@ -20,6 +20,7 @@
 #include <PubSubClient.h>
 
 #include "SparkFun_Qwiic_Relay.h"   // Dual SSR (I2C)
+#include <SerLCD.h>  // LCD over qwiic via I2C
 #include <Adafruit_ADS1X15.h>       // ADS1015/1115
 #include <AutoPID.h>                // https://github.com/r-downing/AutoPID
 
@@ -56,7 +57,7 @@ const char* DEV_BASE       = "heat/01";
 
 // Thermistor channels on ADS1015
 #define TH_CH_1  0           // A0
-#define TH_CH_2  1           // A1
+#define TH_CH_2  3           // A1
 
 /************ Safety / filtering ************/
 // EMA filter (slightly slower to suppress jitter)
@@ -80,6 +81,8 @@ char clientId[40];
 
 Qwiic_Relay relay(RELAY_ADDR);
 bool relay_ok = false;
+
+SerLCD lcd;
 
 Adafruit_ADS1015 ads;
 
@@ -119,6 +122,20 @@ uint32_t lastBrakeLog[HEATER_COUNT + 1]= {0};
 
 /************ Helpers ************/
 bool validCh(uint8_t ch) { return (ch >= 1 && ch <= HEATER_COUNT); }
+
+void write_to_lcd() {
+  for (int i = 0; i < 2; i++) {
+    lcd.setCursor((byte)(i * 8), 0);
+    lcd.print(String(i) + ":");
+    lcd.print(tempC[i+1]);
+    lcd.print(" ");
+
+    lcd.setCursor((byte)(i * 8), 1);
+    lcd.print("T:");
+    lcd.print(setTarget[i+1]);
+    lcd.print(" ");
+  }
+}
 
 bool ensureRelay() {
   if (!relay_ok) {
@@ -369,17 +386,27 @@ void setup() {
   // ADS1015
   if (!ads.begin()) {
     Serial.println("[ERROR] ADS1015 not found!");
+    lcd.print("Error: ADS1015 not found.");
   } else {
     Serial.println("[I2C] ADS1015 ready");
   }
 
+  // Initialize the LCD
+  lcd.begin(Wire);                  // Set up the LCD for I2C communication
+  lcd.setBacklight(255, 255, 255);  // Set backlight to bright white
+  lcd.setContrast(5);               // Set contrast. Lower to 0 for higher contrast.
+  lcd.disableSplash();              // Disables the splash screen
+  lcd.clear();                      // Clear the display - this moves the cursor to home position as well
+  lcd.print("Booting!");
+  Serial.println("[I2C] LCD ready");
+
+  relay_ok = relay.begin();
+  if (relay_ok) Serial.println("[I2C] Qwiic Dual SSR ready");
+  else          Serial.println("[I2C] Qwiic Dual SSR NOT detected");
+
   WiFi.onEvent(onNetEvent);
   Serial.println("[ETH] Bringing up Ethernet...");
   ETH.begin(ETH_PHY_TYPE, ETH_PHY_ADDR, ETH_PHY_MDC, ETH_PHY_MDIO, ETH_POWER_PIN, ETH_CLK_MODE);
-
-  relay_ok = relay.begin();
-  if (relay_ok) Serial.println("[I2C] Qwiic Dual SSR detected");
-  else          Serial.println("[I2C] Qwiic Dual SSR NOT detected");
 
   // Start OFF
   for (uint8_t i = 1; i <= HEATER_COUNT; i++) {
@@ -406,10 +433,13 @@ void setup() {
   mqtt.setKeepAlive(30);
 
   Serial.println("[BOOT] Setup complete\n");
+  lcd.clear();
 }
 
 void loop() {
   const uint32_t now = millis();
+
+  write_to_lcd();
 
   if (eth_ready && !mqtt.connected()) ensureMqtt();
   if (mqtt.connected()) mqtt.loop();

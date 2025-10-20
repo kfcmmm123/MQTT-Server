@@ -17,7 +17,7 @@
 #include <SparkFun_Qwiic_Relay.h>
 
 /************ MQTT broker config ************/
-const char* MQTT_BROKER_IP   = "192.168.0.102";   // your laptop/broker IP
+const char* MQTT_BROKER_IP   = "192.168.0.100";   // your laptop/broker IP
 const uint16_t MQTT_PORT     = 1883;
 const char* MQTT_USER        = "pump1";
 const char* MQTT_PASS        = "pump";
