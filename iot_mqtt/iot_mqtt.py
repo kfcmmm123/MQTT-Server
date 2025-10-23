@@ -1,28 +1,174 @@
 # iot_mqtt.py
 # Unified MQTT helpers for ESP32-POE-ISO devices:
-# - Pumps (SparkFun Qwiic Quad Relay)
-# - Ultrasonic drivers (2 channels on a SparkFun Qwiic Quad Relay)
-# - Heaters (SparkFun 2-Channel Solid State Relay)
-#
-# The script provides reusable Python classes for MQTT-based control
-# and monitoring of multiple ESP32-based subsystems.
+# - Pumps (SparkFun Qwiic Relays)
+# - Ultrasonic drivers (SparkFun Qwiic Relays)
+# - Heaters (SparkFun Dual SSR)
 #
 # Requires: paho-mqtt>=1.6 (v2 callback API)
 
-import time, socket, subprocess, shutil, os, threading
-from typing import Optional, Callable, Iterable
-from paho.mqtt import client as mqtt
+from __future__ import annotations
+
+import atexit
+import os
+import shutil
+import signal
+import socket
+import subprocess
+import threading
+import time
 from datetime import datetime
+from typing import Callable, Final, Iterable, Optional
 
-# ---------------------------------------------------------------------------
-# Utility functions for checking broker ports and starting/stopping Mosquitto
-# ---------------------------------------------------------------------------
+from paho.mqtt import client as mqtt
 
+# -----------------------------------------------------------------------------
+# Global device counts (single source of truth for loops / safety shutdowns)
+# -----------------------------------------------------------------------------
+PUMP_COUNT: Final[int] = 3
+ULTRA_COUNT: Final[int] = 2
+HEAT_COUNT: Final[int] = 2
+
+
+# -----------------------------------------------------------------------------
+# Controller beacon (ONLINE/OFFLINE via LWT + periodic heartbeat)
+# -----------------------------------------------------------------------------
+class ControllerBeacon:
+    """
+    Publishes controller ONLINE/OFFLINE (retained) and periodic heartbeat so
+    devices can fail-safe. Uses MQTT LWT for crash/kill scenarios.
+
+    Topics:
+      - status_topic   (retained): "ONLINE"/"OFFLINE"
+      - heartbeat_topic          : "1" periodically
+    """
+
+    def __init__(
+        self,
+        *,
+        broker: str = "192.168.0.100",
+        port: int = 1883,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        client_id: str = "pyctl-controller",
+        status_topic: str = "pyctl/status",
+        heartbeat_topic: str = "pyctl/heartbeat",
+        heartbeat_interval: float = 5.0,
+        keepalive: int = 30,
+    ) -> None:
+        self.broker = broker
+        self.port = port
+        self.username = username
+        self.password = password
+        self.client_id = client_id
+        self.status_topic = status_topic
+        self.heartbeat_topic = heartbeat_topic
+        self.heartbeat_interval = heartbeat_interval
+        self.keepalive = keepalive
+
+        self._client: Optional[mqtt.Client] = None
+        self._hb_thread: Optional[threading.Thread] = None
+        self._stop = threading.Event()
+        self._loop_running = False
+
+    def _build_client(self) -> mqtt.Client:
+        c = mqtt.Client(
+            mqtt.CallbackAPIVersion.VERSION2,
+            client_id=self.client_id,
+            protocol=mqtt.MQTTv311,
+        )
+        if self.username and self.password:
+            c.username_pw_set(self.username, self.password)
+
+        # LWT: if we die unexpectedly, broker publishes OFFLINE (retained)
+        c.will_set(self.status_topic, payload="OFFLINE", qos=1, retain=True)
+
+        def _on_connect(client: mqtt.Client, _userdata, _flags, reason_code, _props=None) -> None:
+            if reason_code == 0:
+                print(f"[ctl] Connected -> {self.broker}:{self.port}")
+                client.publish(self.status_topic, "ONLINE", qos=1, retain=True)
+            else:
+                print(f"[ctl] Connect failed rc={reason_code}")
+
+        c.on_connect = _on_connect
+        return c
+
+    def start(self) -> None:
+        if self._client is not None:
+            return
+        self._client = self._build_client()
+        self._client.connect(self.broker, self.port, keepalive=self.keepalive)
+        self._client.loop_start()
+        self._loop_running = True
+
+        # heartbeat thread
+        self._stop.clear()
+
+        def _hb() -> None:
+            while not self._stop.is_set():
+                try:
+                    assert self._client is not None
+                    self._client.publish(self.heartbeat_topic, "1", qos=0, retain=False)
+                except Exception:
+                    pass
+                # sleep in small chunks so stop reacts quickly
+                chunks = max(1, int(self.heartbeat_interval * 10))
+                for _ in range(chunks):
+                    if self._stop.is_set():
+                        break
+                    time.sleep(0.1)
+
+        self._hb_thread = threading.Thread(target=_hb, daemon=True)
+        self._hb_thread.start()
+
+        # graceful OFFLINE on exit/signals (LWT still covers crashes)
+        atexit.register(self.stop)
+        try:
+            signal.signal(signal.SIGINT, self._sig_stop)
+            signal.signal(signal.SIGTERM, self._sig_stop)
+        except Exception:
+            # Not all environments allow signal handlers (e.g., notebooks on Windows)
+            pass
+
+    def _sig_stop(self, *_args) -> None:
+        self.stop()
+        # Let normal KeyboardInterrupt handling proceed in scripts
+        raise KeyboardInterrupt
+
+    def stop(self) -> None:
+        if self._client is None:
+            return
+        print("[ctl] Stopping controller beacon (OFFLINE)...")
+        try:
+            self._client.publish(self.status_topic, "OFFLINE", qos=1, retain=True)
+        except Exception:
+            pass
+
+        # stop heartbeat
+        self._stop.set()
+        if self._hb_thread and self._hb_thread.is_alive():
+            self._hb_thread.join(timeout=2.0)
+        self._hb_thread = None
+
+        # stop loop and disconnect
+        try:
+            if self._loop_running and self._client is not None:
+                self._client.loop_stop()
+                self._loop_running = False
+            if self._client is not None:
+                self._client.disconnect()
+        finally:
+            self._client = None
+
+
+# -----------------------------------------------------------------------------
+# Mosquitto helper (optional local broker)
+# -----------------------------------------------------------------------------
 def _is_port_open(host: str, port: int) -> bool:
     """Return True if something is already listening on (host, port)."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.settimeout(0.5)
         return s.connect_ex((host, port)) == 0
+
 
 def _wait_for_port(host: str, port: int, timeout: float = 10.0) -> bool:
     """Wait until a TCP port opens or timeout expires."""
@@ -32,7 +178,8 @@ def _wait_for_port(host: str, port: int, timeout: float = 10.0) -> bool:
             return True
         time.sleep(0.25)
     return False
-        
+
+
 def start_broker_if_needed(
     mosq_exe: str = r"C:\Program Files\mosquitto\mosquitto.exe",
     mosq_conf: str = r"C:\Program Files\mosquitto\mosquitto.conf",
@@ -74,19 +221,22 @@ def start_broker_if_needed(
     )
 
     # Thread to add timestamps to log
-    def log_with_timestamps(stream, dest):
-        for line in iter(stream.readline, ''):
+    def log_with_timestamps(stream, dest) -> None:
+        for line in iter(stream.readline, ""):
             ts = datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")
             dest.write(ts + line)
         stream.close()
-    threading.Thread(target=log_with_timestamps, args=(proc.stdout, logf), daemon=True).start()
+
+    threading.Thread(
+        target=log_with_timestamps, args=(proc.stdout, logf), daemon=True
+    ).start()
 
     # --- Wait for broker ready --------------------------------------------
     if not _wait_for_port("127.0.0.1", port, timeout=10):
         proc.terminate()
         raise RuntimeError(f"Broker failed to open port {port}")
 
-    proc._log_handle = logf
+    proc._log_handle = logf  # type: ignore[attr-defined]
     print("[broker] Broker is ready.")
     return proc
 
@@ -102,30 +252,65 @@ def stop_broker(proc: Optional[subprocess.Popen]) -> None:
             print("[broker] Mosquitto did not terminate in time; killing it.")
             proc.kill()
 
-        # Log the stop event with timestamp
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         msg = f"[{timestamp}] [broker] Mosquitto stopped.\n"
         print(msg.strip())
 
-        if hasattr(proc, "_log_handle") and proc._log_handle:
+        if hasattr(proc, "_log_handle") and proc._log_handle:  # type: ignore[attr-defined]
             try:
-                proc._log_handle.write(msg)
-                proc._log_handle.flush()
+                proc._log_handle.write(msg)  # type: ignore[attr-defined]
+                proc._log_handle.flush()     # type: ignore[attr-defined]
             except Exception:
                 pass
 
     # Close log handle cleanly
     if proc and hasattr(proc, "_log_handle"):
         try:
-            proc._log_handle.close()
+            proc._log_handle.close()  # type: ignore[attr-defined]
         except Exception:
             pass
 
 
-# ---------------------------------------------------------------------------
-# Base MQTT device class providing connection, publish, and monitoring utilities
-# ---------------------------------------------------------------------------
+def _best_effort_all_off(
+    pumps: Optional["PumpMQTT"] = None,
+    ultra: Optional["UltraMQTT"] = None,
+    heat: Optional["HeatMQTT"] = None,
+) -> None:
+    """Try to turn every output OFF on clean shutdown (best-effort)."""
+    try:
+        if pumps:
+            for ch in range(1, PUMP_COUNT + 1):
+                try:
+                    pumps.off(ch)
+                    time.sleep(0.02)
+                except Exception:
+                    pass
+        if ultra:
+            for ch in range(1, ULTRA_COUNT + 1):
+                try:
+                    ultra.off(ch)
+                    time.sleep(0.02)
+                except Exception:
+                    pass
+        if heat:
+            for ch in range(1, HEAT_COUNT + 1):
+                try:
+                    heat.set_pwm(ch, 0)
+                    time.sleep(0.02)
+                except Exception:
+                    pass
+                try:
+                    heat.off(ch)
+                    time.sleep(0.02)
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
+
+# -----------------------------------------------------------------------------
+# Base MQTT client wrapper
+# -----------------------------------------------------------------------------
 class _BaseDevice:
     """
     Common MQTT client wrapper.
@@ -148,7 +333,7 @@ class _BaseDevice:
         client_id: str = "pyctl1",
         keepalive: int = 30,
         print_publish: bool = True,
-    ):
+    ) -> None:
         self.broker = broker
         self.port = port
         self.username = username
@@ -158,26 +343,26 @@ class _BaseDevice:
         self.keepalive = keepalive
         self.print_publish = print_publish
 
-        # Runtime state
         self._client: Optional[mqtt.Client] = None
-        self._loop_running: bool = False          # <--- track loop state here
+        self._loop_running: bool = False
         self._watch_thread: Optional[threading.Thread] = None
         self._watch_stop = threading.Event()
 
-    # -------------------
     # Connection handling
-    # -------------------
-
     def connect(self, retries: int = 1, delay: float = 0.5) -> None:
         """Create a client and open a TCP connection. Does NOT start the network loop."""
         if self._client is not None:
             return
 
-        c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=self.client_id, protocol=mqtt.MQTTv311)
+        c = mqtt.Client(
+            mqtt.CallbackAPIVersion.VERSION2,
+            client_id=self.client_id,
+            protocol=mqtt.MQTTv311,
+        )
         if self.username and self.password:
             c.username_pw_set(self.username, self.password)
 
-        def _on_connect(client, userdata, flags, reason_code, properties=None):
+        def _on_connect(client: mqtt.Client, _userdata, _flags, reason_code, _props=None) -> None:
             if reason_code == 0:
                 print(f"[{self.client_id}] Connected to {self.broker}:{self.port}")
             else:
@@ -205,6 +390,7 @@ class _BaseDevice:
         if self._client is None:
             self.connect(retries=retries, delay=delay)
         if not getattr(self, "_loop_running", False):
+            assert self._client is not None
             self._client.loop_start()
             self._loop_running = True
 
@@ -219,12 +405,9 @@ class _BaseDevice:
             finally:
                 self._client = None
 
-    # -------------------
     # Publishing & topics
-    # -------------------
-
     def _require(self) -> mqtt.Client:
-        """Internal: raise error if no client connection."""
+        """Raise if no client connection."""
         if self._client is None:
             raise RuntimeError("Not connected. Call connect()/ensure_connected() first.")
         return self._client
@@ -237,10 +420,7 @@ class _BaseDevice:
         if self.print_publish:
             print(f"[{self.client_id}] Published '{payload}' to {full}")
 
-    # -------------------
     # Monitoring utilities
-    # -------------------
-
     def status(self, topics: Optional[Iterable[str]] = None, seconds: float = 3.0) -> None:
         """Subscribe temporarily to status/heartbeat or custom topics and print messages."""
         c = self._require()
@@ -251,7 +431,7 @@ class _BaseDevice:
         for t in to_sub:
             c.subscribe(t, qos=0)
 
-        def _on_msg(client, userdata, msg):
+        def _on_msg(_client: mqtt.Client, _userdata, msg: mqtt.MQTTMessage) -> None:
             try:
                 print(f"{msg.topic} {msg.payload.decode('utf-8', errors='ignore')}")
             except Exception:
@@ -263,10 +443,8 @@ class _BaseDevice:
             time.sleep(seconds)  # loop is running; we'll receive messages during this window
         finally:
             c.on_message = old
-            # Optional: unsubscribe to be tidy
             for t in to_sub:
                 c.unsubscribe(t)
-
 
     def watch(self, on_message: Optional[Callable[[str, bytes], None]] = None) -> None:
         """
@@ -279,7 +457,7 @@ class _BaseDevice:
 
         self._watch_stop.clear()
 
-        def _default_cb(topic: str, payload: bytes):
+        def _default_cb(topic: str, payload: bytes) -> None:
             try:
                 print(f"{topic} {payload.decode('utf-8', errors='ignore')}")
             except Exception:
@@ -287,14 +465,14 @@ class _BaseDevice:
 
         cb = on_message or _default_cb
 
-        def _run():
+        def _run() -> None:
             old = c.on_message
             c.subscribe(f"{self.base}/#", qos=0)
             try:
-                def _on_msg(_c, _u, msg):
+                def _on_msg(_c: mqtt.Client, _u, msg: mqtt.MQTTMessage) -> None:
                     cb(msg.topic, msg.payload)
+
                 c.on_message = _on_msg
-                # Just park here until stop is requested; network loop is running elsewhere
                 while not self._watch_stop.is_set():
                     time.sleep(0.1)
             finally:
@@ -316,167 +494,142 @@ class _BaseDevice:
             self._watch_thread.join(timeout=2)
         self._watch_thread = None
 
-    # Context manager sugar — allows:
-    # with PumpMQTT(...) as pumps: pumps.on(1)
-    # def __enter__(self):
-    #     self.ensure_connected()
-    #     return self
 
-    # def __exit__(self, exc_type, exc, tb):
-    #     self.watch_stop()
-    #     self.disconnect()
-
-# ---------------------------------------------------------------------------
-# Helper for validating channel numbers
-# ---------------------------------------------------------------------------
-
+# -----------------------------------------------------------------------------
+# Device-specific MQTT wrappers
+# -----------------------------------------------------------------------------
 def _check_range(value: int, low: int, high: int, label: str = "channel") -> None:
     """Raise ValueError if value is not within the allowed range [low, high]."""
     if not (low <= value <= high):
         raise ValueError(f"{label.capitalize()} must be {low}-{high}")
 
 
-# ---------------------------------------------------------------------------
-# Device-specific MQTT wrappers
-# ---------------------------------------------------------------------------
-
 class PumpMQTT(_BaseDevice):
-    """Controls 4 pump relays via MQTT topics."""
+    """Controls pump relays via MQTT topics under base/cmd/<n>."""
+    # Keep validation consistent with module-level constant:
+    PUMP_COUNT: Final[int] = PUMP_COUNT  # type: ignore[name-defined]
 
     def on(self, channel: int, duration_ms: Optional[int] = None) -> None:
         """Turn a pump ON (optionally auto-OFF after duration_ms)."""
-        _check_range(channel, 1, 4, "channel")
+        _check_range(channel, 1, self.PUMP_COUNT, "channel")
         cmd = "ON" if duration_ms is None else f"ON:{duration_ms}"
         self._publish(f"cmd/{channel}", cmd, retain=False)
 
     def off(self, channel: int) -> None:
         """Turn a pump OFF."""
-        _check_range(channel, 1, 4, "channel")
+        _check_range(channel, 1, self.PUMP_COUNT, "channel")
         self._publish(f"cmd/{channel}", "OFF", retain=False)
 
     def toggle(self, channel: int, timeout_s: float = 1.0) -> None:
-        """Toggle pump state by reading retained value and flipping it.
-
-        Requires: ensure_connected() has been called (background loop running).
-        """
-        _check_range(channel, 1, 4, "channel")
+        """Toggle pump by reading retained state and flipping it (requires background loop)."""
+        _check_range(channel, 1, self.PUMP_COUNT, "channel")
         c = self._require()
         if not getattr(self, "_loop_running", False):
             raise RuntimeError("toggle() requires the background loop. Call ensure_connected() first.")
 
         state_topic = f"{self.base}/state/{channel}"
-        got = {"val": None}
+        got: dict[str, Optional[str]] = {"val": None}
 
-        # temporary per-topic callback
-        def _cb(_c, _u, msg):
+        def _cb(_c, _u, msg: mqtt.MQTTMessage) -> None:
             got["val"] = msg.payload.decode(errors="ignore")
 
         c.message_callback_add(state_topic, _cb)
         try:
-            # subscribe and give the broker a moment to deliver the retained state
             c.subscribe(state_topic, qos=0)
             t0 = time.time()
             while got["val"] is None and (time.time() - t0) < timeout_s:
                 time.sleep(0.02)
         finally:
-            # clean up
             c.message_callback_remove(state_topic)
             c.unsubscribe(state_topic)
 
-        # default to ON if we didn't get a retained state
         new_val = "OFF" if (got["val"] == "ON") else "ON"
         self._publish(f"cmd/{channel}", new_val)
 
-
     def status(self, seconds: float = 3.0) -> None:
-        """Query all pump state and heartbeat topics."""
-        topics = [f"{self.base}/status", f"{self.base}/heartbeat"] + \
-                 [f"{self.base}/state/{i}" for i in (1, 2, 3, 4)]
+        topics = [f"{self.base}/status", f"{self.base}/heartbeat"] + [
+            f"{self.base}/state/{i}" for i in range(1, PUMP_COUNT + 1)
+        ]
         super().status(topics, seconds)
 
 
 class UltraMQTT(_BaseDevice):
     """Controls 2 ultrasonic channels via relay driver."""
+    ULTRA_COUNT: Final[int] = ULTRA_COUNT  # type: ignore[name-defined]
 
-    def on(self, channel: int) -> None:
-        """Turn an ultrasonic channel ON."""
-        _check_range(channel, 1, 2, "channel")
-        self._publish(f"cmd/{channel}", "ON", retain=False)
+    def on(self, channel: int, duration_ms: Optional[int] = None) -> None:
+        """Turn an ultrasonic ON (optionally auto-OFF after duration_ms)."""
+        _check_range(channel, 1, self.ULTRA_COUNT, "channel")
+        cmd = "ON" if duration_ms is None else f"ON:{duration_ms}"
+        self._publish(f"cmd/{channel}", cmd, retain=False)
 
     def off(self, channel: int) -> None:
-        """Turn an ultrasonic channel OFF."""
-        _check_range(channel, 1, 2, "channel")
+        _check_range(channel, 1, self.ULTRA_COUNT, "channel")
         self._publish(f"cmd/{channel}", "OFF", retain=False)
 
-    def on_for(self, channel: int, ms: int) -> None:
-        """Turn ON for ms milliseconds (handled by ESP firmware auto-timer)."""
-        _check_range(channel, 1, 2, "channel")
-        if ms <= 0:
-            raise ValueError("Duration must be positive")
-        self._publish(f"cmd/{channel}", f"ON:{ms}", retain=False)
-
     def status(self, seconds: float = 3.0) -> None:
-        """Print current state, heartbeat, and status topics."""
-        topics = [f"{self.base}/status", f"{self.base}/heartbeat"] + \
-                 [f"{self.base}/state/{i}" for i in (1, 2)]
+        topics = [f"{self.base}/status", f"{self.base}/heartbeat"] + [
+            f"{self.base}/state/{i}" for i in range(1, ULTRA_COUNT + 1)
+        ]
         super().status(topics, seconds)
 
 
 class HeatMQTT(_BaseDevice):
     """Controls 2 heater SSR channels and interacts with thermistor readings."""
+    HEAT_COUNT: Final[int] = HEAT_COUNT  # type: ignore[name-defined]
 
-    # ---- Basic ON/OFF & manual PWM ----
+    # Basic ON/OFF & manual PWM
     def on(self, channel: int) -> None:
-        _check_range(channel, 1, 2, "heater number")
+        _check_range(channel, 1, self.HEAT_COUNT, "heater number")
         self._publish(f"cmd/{channel}", "ON")
 
     def off(self, channel: int) -> None:
-        _check_range(channel, 1, 2, "heater number")
+        _check_range(channel, 1, self.HEAT_COUNT, "heater number")
         self._publish(f"cmd/{channel}", "OFF")
 
     def set_pwm(self, channel: int, percent: float) -> None:
-        _check_range(channel, 1, 2, "heater number")
+        _check_range(channel, 1, self.HEAT_COUNT, "heater number")
         p = max(0, min(100, int(round(percent))))
         self._publish(f"cmd/{channel}", f"PWM:{p}")
 
-    # ---- PID / Target control ----
+    # PID / Target control
     def set_base_temp(self, channel: int, temp_c: float) -> None:
         """Set target temperature on ESP (publishes retained echo on set/<n>)."""
-        _check_range(channel, 1, 2, "heater number")
+        _check_range(channel, 1, self.HEAT_COUNT, "heater number")
         self._publish(f"cmd/{channel}", f"SET:{temp_c:.1f}")
 
-    # Friendly alias (your example used heat.set_target)
     def set_target(self, channel: int, temp_c: float) -> None:
+        """Alias for set_base_temp()."""
         self.set_base_temp(channel, temp_c)
 
     def pid_on(self, channel: int) -> None:
-        """Enable PID on the ESP for this channel."""
-        _check_range(channel, 1, 2, "heater number")
+        _check_range(channel, 1, self.HEAT_COUNT, "heater number")
         self._publish(f"cmd/{channel}", "PID:ON")
 
     def pid_off(self, channel: int) -> None:
-        """Disable PID on the ESP for this channel."""
-        _check_range(channel, 1, 2, "heater number")
+        _check_range(channel, 1, self.HEAT_COUNT, "heater number")
         self._publish(f"cmd/{channel}", "PID:OFF")
 
-    # ---- Temperature queries ----
+    # Temperature queries
     def get_base_temp(self, channel: int, timeout_s: float = 1.5) -> float:
         """
         Actively request a temperature reading:
           - Sends "GET" to cmd/<n>
           - Waits for temp/<n>
         """
-        _check_range(channel, 1, 2, "heater number")
+        _check_range(channel, 1, self.HEAT_COUNT, "heater number")
         c = self._require()
         if not getattr(self, "_loop_running", False):
             raise RuntimeError("get_base_temp() requires the background loop. Call ensure_connected() first.")
         topic = f"{self.base}/temp/{channel}"
-        result = {"val": None}
-        def _cb(_c, _u, msg):
+        result: dict[str, Optional[float]] = {"val": None}
+
+        def _cb(_c, _u, msg: mqtt.MQTTMessage) -> None:
             try:
                 result["val"] = float(msg.payload.decode("utf-8", errors="ignore").strip())
             except ValueError:
                 pass
+
         c.message_callback_add(topic, _cb)
         try:
             c.subscribe(topic, qos=0)
@@ -487,25 +640,26 @@ class HeatMQTT(_BaseDevice):
         finally:
             c.message_callback_remove(topic)
             c.unsubscribe(topic)
+
         if result["val"] is None:
             raise TimeoutError(f"No temp reading on {topic} within {timeout_s:.1f}s")
-        return result["val"]
+        return float(result["val"])
 
     def wait_temp(self, channel: int, timeout_s: float = 5.0) -> float:
-        """
-        Passive wait for the *next* published temp/<n> (useful when ESP is already streaming).
-        """
-        _check_range(channel, 1, 2, "heater number")
+        """Passive wait for the next published temp/<n>."""
+        _check_range(channel, 1, self.HEAT_COUNT, "heater number")
         c = self._require()
         if not getattr(self, "_loop_running", False):
             raise RuntimeError("wait_temp() requires the background loop. Call ensure_connected() first.")
         topic = f"{self.base}/temp/{channel}"
-        result = {"val": None}
-        def _cb(_c, _u, msg):
+        result: dict[str, Optional[float]] = {"val": None}
+
+        def _cb(_c, _u, msg: mqtt.MQTTMessage) -> None:
             try:
                 result["val"] = float(msg.payload.decode("utf-8", errors="ignore").strip())
             except ValueError:
                 pass
+
         c.message_callback_add(topic, _cb)
         try:
             c.subscribe(topic, qos=0)
@@ -515,90 +669,81 @@ class HeatMQTT(_BaseDevice):
         finally:
             c.message_callback_remove(topic)
             c.unsubscribe(topic)
+
         if result["val"] is None:
             raise TimeoutError(f"No temp published on {topic} within {timeout_s:.1f}s")
-        return result["val"]
-
-    def get_target(self, channel: int, timeout_s: float = 1.5) -> float:
-        """
-        Read retained target from set/<n>.
-        """
-        _check_range(channel, 1, 2, "heater number")
-        c = self._require()
-        if not getattr(self, "_loop_running", False):
-            raise RuntimeError("get_target() requires the background loop. Call ensure_connected() first.")
-        topic = f"{self.base}/set/{channel}"
-        result = {"val": None}
-        def _cb(_c, _u, msg):
-            try:
-                result["val"] = float(msg.payload.decode("utf-8", errors="ignore").strip())
-            except ValueError:
-                pass
-        c.message_callback_add(topic, _cb)
-        try:
-            c.subscribe(topic, qos=0)
-            t0 = time.time()
-            while result["val"] is None and (time.time() - t0) < timeout_s:
-                time.sleep(0.02)
-        finally:
-            c.message_callback_remove(topic)
-            c.unsubscribe(topic)
-        if result["val"] is None:
-            raise TimeoutError(f"No retained target on {topic} within {timeout_s:.1f}s")
-        return result["val"]
+        return float(result["val"])
 
     def status(self, seconds: float = 3.0) -> None:
         topics = [f"{self.base}/status", f"{self.base}/heartbeat"] \
-               + [f"{self.base}/state/{i}" for i in (1, 2)] \
-               + [f"{self.base}/set/{i}"  for i in (1, 2)] \
-               + [f"{self.base}/pwm/{i}"  for i in (1, 2)] \
-               + [f"{self.base}/temp/{i}" for i in (1, 2)]
+               + [f"{self.base}/state/{i}" for i in range(1, HEAT_COUNT + 1)] \
+               + [f"{self.base}/set/{i}"  for i in range(1, HEAT_COUNT + 1)] \
+               + [f"{self.base}/pwm/{i}"  for i in range(1, HEAT_COUNT + 1)] \
+               + [f"{self.base}/temp/{i}" for i in range(1, HEAT_COUNT + 1)]
         super().status(topics, seconds)
-# ---------------------------------------------------------------------------
-# Example usage: executed only when running this file directly
-# ---------------------------------------------------------------------------
 
+
+# -----------------------------------------------------------------------------
+# Example usage (only when running this file directly)
+# -----------------------------------------------------------------------------
 if __name__ == "__main__":
-    # Optional: start local broker if needed
     proc = start_broker_if_needed()
 
-    # Point these at your actual broker IP and creds
-    pumps = PumpMQTT(broker="192.168.0.101", username="pump1",  password="pump",
+    broker = "192.168.0.100"
+
+    # Controller beacon (LWT + heartbeat)
+    beacon = ControllerBeacon(
+        broker=broker,
+        port=1883,
+        username="pyctl-controller",
+        password="controller",
+        client_id="pyctl-controller",
+        status_topic="pyctl/status",
+        heartbeat_topic="pyctl/heartbeat",
+        heartbeat_interval=5.0,
+        keepalive=30,
+    )
+    beacon.start()
+
+    # Device wrappers
+    pumps = PumpMQTT(broker=broker, username="pump1", password="pump",
                      base_topic="pumps/01", client_id="pyctl-pumps")
-    ultra = UltraMQTT(broker="192.168.0.101", username="ultra1", password="ultra",
+    ultra = UltraMQTT(broker=broker, username="ultra1", password="ultra",
                       base_topic="ultra/01", client_id="pyctl-ultra")
-    heat  = HeatMQTT (broker="192.168.0.101", username="heat1",  password="heat",
+    heat  = HeatMQTT (broker=broker, username="heat1", password="heat",
                       base_topic="heat/01",  client_id="pyctl-heat")
 
     pumps.ensure_connected()
     ultra.ensure_connected()
     heat.ensure_connected()
 
-    # Pump demo
-    pumps.on(1, duration_ms=1500)    # run pump 1 for 1.5s
-    time.sleep(2)
-
-    # Ultrasonic demo
-    ultra.on_for(1, 2000)
-    time.sleep(1)
-
-    # Heater + thermistor demo
-    heat.set_target(1, 42.0)         # set target to 42C (ESP retains on set/1)
-    heat.pid_on(1)                   # enable PID loop on ESP
-    # actively request a reading now:
     try:
-        t = heat.get_base_temp(1, timeout_s=5.0)
-        print("Temp(ch1) =", t)
-    except TimeoutError as e:
-        print("Temp read timeout:", e)
+        # Demo actions
+        pumps.on(1, duration_ms=1500)
+        time.sleep(2)
 
-    time.sleep(3)
-    heat.pid_off(1)                  # stop PID
-    heat.set_pwm(1, 0)               # ensure PWM is off
-    heat.off(1)                      # ensure relay is off
+        ultra.on_for(1, 2000)
+        time.sleep(1)
 
-    pumps.disconnect()
-    ultra.disconnect()
-    heat.disconnect()
+        heat.set_target(1, 42.0)
+        heat.pid_on(1)
+        try:
+            t = heat.get_base_temp(1, timeout_s=5.0)
+            print("Temp(ch1) =", t)
+        except TimeoutError as e:
+            print("Temp read timeout:", e)
+        time.sleep(3)
+        heat.pid_off(1)
+        heat.set_pwm(1, 0)
+        heat.off(1)
 
-    stop_broker(proc)
+    finally:
+        # Best-effort tidy OFF on graceful exit (safety on crash is via LWT)
+        _best_effort_all_off(pumps, ultra, heat)
+
+        pumps.disconnect()
+        ultra.disconnect()
+        heat.disconnect()
+
+        beacon.stop()
+        stop_broker(proc)

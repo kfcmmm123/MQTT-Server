@@ -1,0 +1,4 @@
+# ESP32-POE-ISO IoT Control System Dependencies
+# Python MQTT client library for ESP32 device communication
+
+paho-mqtt>=1.6.0
