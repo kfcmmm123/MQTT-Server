@@ -6,9 +6,9 @@ ESP32-POE-ISO nodes control ultrasonic cleaning drivers via **SparkFun Qwiic Rel
 
 ## Available Firmware
 
-- **`Ultrasonic_quad_client.ino`** - 4-channel controller using SparkFun Qwiic Quad Relay
-- **`Ultrasonic_single_client.ino`** - 2-channel controller using two Qwiic Single Relays
-- **`Ultrasonic_Safety_client.ino`** - Safety-enhanced version with watchdog supervision
+- **`Ultrasonic_quad_client.ino`** - 2-channel controller using 1 SparkFun Qwiic Quad Relay
+- **`Ultrasonic_single_client.ino`** - 2-channel controller using 2 SparkFun Qwiic Single Relays
+- **`Ultrasonic_Safety_client.ino`** - Safety-enhanced version with watchdog supervision (2 Single Relays)
 
 > **Recommended**: Use `Ultrasonic_Safety_client.ino` for production deployments.
 

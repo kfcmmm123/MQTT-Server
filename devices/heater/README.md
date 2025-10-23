@@ -6,7 +6,7 @@ ESP32-POE-ISO nodes control heating elements via **SparkFun Qwiic Dual Solid Sta
 
 ## Available Firmware
 
-- **`Heater_client.ino`** - Main heater controller with PID temperature control
+- **`Heater_client.ino`** - Main heater controller with PID temperature control using SparkFun SSR
 - **`Heater_Safety_client.ino`** - Safety-enhanced version with watchdog supervision
 
 > **Recommended**: Use `Heater_Safety_client.ino` for production deployments.

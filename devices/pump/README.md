@@ -6,25 +6,25 @@ ESP32-POE-ISO nodes control DC peristaltic pumps via **SparkFun Qwiic Relay** mo
 
 ## Available Firmware
 
-- **`Pump_quad_client.ino`** - 4-pump controller using SparkFun Qwiic Quad Relay
-- **`Pump_single_client.ino`** - Single pump controller using one Qwiic Single Relay  
-- **`Pump_Safety_client.ino`** - Safety-enhanced version with watchdog supervision
+- **`Pump_quad_client.ino`** - 4-pump controller using 1 SparkFun Qwiic Quad Relay
+- **`Pump_single_client.ino`** - 3-pump controller using 3 SparkFun Qwiic Single Relay  
+- **`Pump_Safety_client.ino`** - Safety-enhanced version with watchdog supervision (3 Single Relays)
 
 > **Recommended**: Use `Pump_Safety_client.ino` for production deployments.
 
 ## Hardware
 
 * **MCU**: Olimex **ESP32-POE-ISO**
-* **Relay**: SparkFun **Qwiic Quad Relay** (I²C, default addr `0x6D`), or 3/4 single relays
+* **Relay**: SparkFun **Qwiic Quad Relay** (I²C, default addr `0x6D`), or 3 **Qwiic Single Relay** (addr `0x18`, `0x19`, `0x09`)
 * **Power**: PoE or 5 V via USB (PoE preferred)
 * **Cabling**: Qwiic/JST-SH (I²C); pump power routed through relay contacts
 
 ## Wiring
 
-* ESP32-POE-ISO I²C → Qwiic Quad Relay (Qwiic cable)
+* ESP32-POE-ISO I²C → Qwiic Relays (Qwiic cable)
 * Pump positive lead → relay **COM**; relay **NO** → +12 V supply (or whatever your pump supply is)
 * Pump negative lead → supply GND (common)
-* Add per-pump flyback diode if the pump is inductive and relay is mechanical (across pump leads, band to +)
+* Add per-pump flyback diode if the pump is inductive and relay is mechanical (across pump leads, band to +) e.g. 1N4007
 
 ## MQTT
 
@@ -99,7 +99,6 @@ See [Python API Documentation](../iot_mqtt/README.md) for complete usage example
 
 ### Safety Issues
 - **Pump stays on after timeout**: Check controller beacon is running (`pyctl/heartbeat` topic)
-- **Random shutdowns**: Verify Ethernet connection stability and PoE power supply
 
 See [Main Troubleshooting Guide](../../README.md#troubleshooting) for more details.
 
