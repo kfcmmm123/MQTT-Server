@@ -34,6 +34,7 @@ Each subsystem connects through a unified topic schema and supports **autonomous
 
 ```
 MQTT-Server/
+│
 ├── README.md                     # Project overview & quickstart
 │
 ├── devices/                      # ESP32 firmware & documentation
@@ -98,7 +99,7 @@ MQTT-Server/
 | Node                | Features                                              | Firmware                             |
 | ------------------- | ----------------------------------------------------- | ------------------------------------ |
 | **Pump Node**       | Controls up to 4 DC peristaltic pumps via Qwiic relay | `devices/pump/Pump_Safety_client.ino`|
-| **Ultrasonic Node** | Controls 2 ultrasonic driver board via Qwiic relay    | `devices/ultrasonic/Ultra_Safety_client.ino` |
+| **Ultrasonic Node** | Controls 2 ultrasonic driver boards via Qwiic relay    | `devices/ultrasonic/Ultrasonic_Safety_client.ino` |
 | **Heater Node**     | Controls 2 heaters via Qwiic SSR + thermistor sensing + PID + safety brake | `devices/heater/Heater_Safety_client.ino`    |
 
 Each firmware implements MQTT topic handlers, safety gating, and local timers for timed activation (`ON:<ms>`).
@@ -181,10 +182,10 @@ pumps = PumpMQTT(broker="192.168.0.100", username="pump1", password="pump")
 pumps.ensure_connected()
 pumps.on(1, 2000)  # Pump 1 for 2 seconds
 
-# Control pumps
+# Control ultrasonic drivers
 ultra = UltraMQTT(broker="192.168.0.100", username="ultra1", password="ultra")
 ultra.ensure_connected()
-ultra.on(1, 2000)  # Pump 1 for 2 seconds
+ultra.on(1, 2000)  # Ultrasonic 1 for 2 seconds
 
 # Control heaters with PID
 heat = HeatMQTT(broker="192.168.0.100", username="heat1", password="heat")
@@ -222,9 +223,20 @@ heat.pid_on(1)            # Enable PID control
 ### Common Issues
 
 **ESP32 won't connect to MQTT**
-- Check broker IP address in firmware
-- Verify Ethernet connection and PoE power
+- Check broker IP address in firmware (use `ipconfig` to verify network settings)
+- Verify Ethernet connection and PoE power supply
 - Confirm MQTT credentials match ACL configuration
+
+**Broker stops responding with continuous client reconnections**
+> **IMPORTANT**: This indicates a critical broker failure!
+- Stop the broker immediately and wait until `netstat -ano | findstr :1883` shows no output
+- Restart Jupyter/kernel to clear client connections
+- **Root cause**: Server failure causes clients to reconnect with same client IDs, creating connection conflicts that overwhelm the broker
+
+**Broker startup fails**
+- Check for existing broker process: `netstat -ano | findstr :1883`
+- If process exists, kill it: `taskkill /IM mosquitto.exe /F`
+- Verify broker configuration: `ipconfig`, and port availability (default 1883)
 
 **Devices show OFFLINE**
 - Verify controller beacon is running (`pyctl/heartbeat` topic)
@@ -234,17 +246,32 @@ heat.pid_on(1)            # Enable PID control
 **Python API connection fails**
 - Install required dependencies: `pip install paho-mqtt`
 - Check broker address and port (default 1883)
-- Verify user credentials match broker configuration
+- Verify user credentials match broker configuration (also check for user access rights in ACL file)
+- **Check Python controller log file** - The `iot_mqtt.py` has built-in logging that writes detailed connection and communication logs to a log file
 
-**Temperature readings erratic**
-- Check thermistor wiring and pull-up resistors
-- Verify ADS1015 I²C address and connections
-- Calibrate thermistor constants (R25, B2585) for your specific sensors
+**Python controller issues**
+- Check the log file created by `iot_mqtt.py` for detailed error messages and connection status
+- Log file contains MQTT connection attempts, device status updates, and communication errors
+- Look for authentication failures, connection timeouts, or topic permission errors in the logs
 
 ### Getting Help
+
+**Debug MQTT Communication**
+```bash
+# Monitor all MQTT traffic
+mosquitto_sub -v -t "#" -u pyctl-controller -P controller
+
+# Check specific device topics
+mosquitto_sub -v -t "pumps/01/#" -u pump1 -P pump
+mosquitto_sub -v -t "heat/01/#" -u heat1 -P heat
+```
+
+**Additional Resources**
+- **Check Python controller log file** - Built-in logging provides detailed connection status, MQTT communication, and error messages
 - Check device-specific README files for detailed troubleshooting
-- Monitor MQTT topics with `mosquitto_sub -v -t "#"` for debugging
 - Review broker logs for authentication and connection issues
+- Verify network connectivity with `ping <broker-ip>`
+- Test broker connectivity: `mosquitto_pub -h <broker-ip> -t "test" -m "hello"`
 
 ---
 
