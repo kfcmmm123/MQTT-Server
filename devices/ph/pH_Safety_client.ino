@@ -23,9 +23,9 @@
       ph/01/status      retained "ONLINE"/"OFFLINE"
       ph/01/heartbeat   "1" every HEARTBEAT_MS
 
-  Supervision topics (ESP32 subscribes, Python publishes):
-      pyctl/status      retained "ONLINE"/"OFFLINE" (controller LWT)
-      pyctl/heartbeat   "1" periodically
+  Controller supervision (subscribe):
+    pyctl/status   : retained "ONLINE"/"OFFLINE" (controller's LWT)
+    pyctl/heartbeat: "1" periodically
 
   Safety:
     - If controller heartbeat is missing > CTRL_TIMEOUT_MS → put probe to sleep
@@ -39,21 +39,21 @@
 */
 
 #include <ETH.h>
-#include <Ezo_uart.h>
-#include <PubSubClient.h>
 #include <WiFi.h>
 #include <WiFiClient.h>
+#include <PubSubClient.h>
+#include <Ezo_uart.h>
 
 /************ MQTT broker config ************/
-const char *MQTT_BROKER_IP = "192.168.0.100";
+const char* MQTT_BROKER_IP = "192.168.0.100";
 const uint16_t MQTT_PORT = 1883;
-const char *MQTT_USER = "ph1";
-const char *MQTT_PASS = "ph";
-const char *DEV_BASE = "ph/01";
+const char* MQTT_USER = "ph1";
+const char* MQTT_PASS = "ph";
+const char* DEV_BASE = "ph/01";
 
 /************ Supervision topics (from Python controller) ************/
-const char *CTRL_STATUS_TOPIC = "pyctl/status"; // retained ONLINE/OFFLINE (LWT)
-const char *CTRL_HEARTBEAT_TOPIC = "pyctl/heartbeat"; // "1" periodically
+const char* CTRL_STATUS_TOPIC = "pyctl/status"; // retained ONLINE/OFFLINE (LWT)
+const char* CTRL_HEARTBEAT_TOPIC = "pyctl/heartbeat"; // "1" periodically
 
 /************ Safety timeouts (tune as needed) ************/
 const uint32_t CTRL_TIMEOUT_MS = 25000; // if no controller beat -> sleep probe

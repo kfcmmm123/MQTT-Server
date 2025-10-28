@@ -35,12 +35,10 @@ const char* CTRL_STATUS_TOPIC    = "pyctl/status";     // retained ONLINE/OFFLIN
 const char* CTRL_HEARTBEAT_TOPIC = "pyctl/heartbeat";  // "1" every few seconds
 
 /************ Safety timeouts (tune as needed) ************/
-// If controller heartbeat is missing this long -> OFF
-const uint32_t CTRL_TIMEOUT_MS     = 25000;  // 25s
-// If MQTT is down and we can’t reconnect for this long -> OFF
-const uint32_t MQTT_DOWN_OFF_MS    = 20000;  // 20s
-// Optional: auto-OFF for plain ON (not ON:ms). Set 0 to disable.
-const uint32_t MAX_ON_LEASE_MS     = 60000;  // 60s cap for manual ON
+const uint32_t CTRL_TIMEOUT_MS = 25000; // if no controller beat -> sleep probe
+const uint32_t MQTT_DOWN_OFF_MS =
+    20000;                           // if MQTT reconnect stalls -> sleep probe
+const uint32_t HEARTBEAT_MS = 15000; // ESP heartbeat cadence
 
 /************ Ethernet (Olimex ESP32-POE-ISO) ************/
 #define ETH_PHY_TYPE   ETH_PHY_LAN8720
