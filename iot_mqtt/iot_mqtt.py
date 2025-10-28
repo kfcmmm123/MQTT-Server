@@ -275,8 +275,13 @@ def _best_effort_all_off(
     pumps: Optional["PumpMQTT"] = None,
     ultra: Optional["UltraMQTT"] = None,
     heat: Optional["HeatMQTT"] = None,
+    ph:    Optional["PhMQTT"]    = None,
 ) -> None:
-    """Try to turn every output OFF on clean shutdown (best-effort)."""
+    """
+    Try to turn every output OFF on clean shutdown (best-effort).
+    For pH: tell it STOP (no polling) so probe can idle/sleep.
+    For pumps/ultra/heaters: turn off relays / set PWM 0.
+    """
     try:
         if pumps:
             for ch in range(1, PUMP_COUNT + 1):
@@ -304,6 +309,12 @@ def _best_effort_all_off(
                     time.sleep(0.02)
                 except Exception:
                     pass
+        if ph:
+            try:
+                ph.stop_poll()  # ask ESP32 to stop periodic "R"
+                time.sleep(0.05)
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -682,6 +693,96 @@ class HeatMQTT(_BaseDevice):
                + [f"{self.base}/temp/{i}" for i in range(1, HEAT_COUNT + 1)]
         super().status(topics, seconds)
 
+class PhMQTT(_BaseDevice):
+    """
+    Controls/monitors the ESP32-POE-ISO pH probe node.
+
+    Topics (device publishes):
+      ph/01/status       retained "ONLINE"/"OFFLINE"
+      ph/01/heartbeat    "1" every HEARTBEAT_MS
+      ph/01/ph           latest pH (ASCII, e.g. "7.03")
+      ph/01/reply        reply from passthrough commands
+
+    Topics (device subscribes, we publish to):
+      ph/01/cmd:
+         START:<ms>   begin periodic polling (ms between "R")
+         STOP         stop polling
+         ONESHOT      read once and publish
+         <raw>        passthrough to probe ("i", "Status,?", etc.)
+
+    We (Python controller) DO NOT publish to status/heartbeat/etc.
+    We only publish to ph/01/cmd.
+    """
+
+    def cmd_raw(self, text: str) -> None:
+        """
+        Send an arbitrary command string to the ESP32 pH node.
+        e.g. "ONESHOT", "START:5000", "STOP", "Cal,mid,7.00", etc.
+        """
+        # We don't enforce grammar here, just publish.
+        # The ESP32 firmware will sanity-check START:<ms>, etc.
+        self._publish("cmd", text, qos=0, retain=False)
+
+    def oneshot(self) -> None:
+        """Request one immediate pH reading (device will publish ph/01/ph)."""
+        self.cmd_raw("ONESHOT")
+
+    def start_poll(self, interval_ms: int) -> None:
+        """
+        Ask ESP32 to start periodic polling.
+        Firmware enforces bounds (min 2000ms, max 99000ms).
+        """
+        self.cmd_raw(f"START:{interval_ms}")
+
+    def stop_poll(self) -> None:
+        """Tell ESP32 to stop periodic polling."""
+        self.cmd_raw("STOP")
+
+    def status(self, seconds: float = 3.0) -> None:
+        """
+        Override status() to also listen to ph and reply topics while sampling.
+        We'll temporarily subscribe to:
+          ph/01/status
+          ph/01/heartbeat
+          ph/01/ph
+          ph/01/reply
+        """
+        topics = [
+            f"{self.base}/status",
+            f"{self.base}/heartbeat",
+            f"{self.base}/ph",
+            f"{self.base}/reply",
+        ]
+        super().status(topics, seconds)
+
+    def watch_ph(self, seconds: float = 5.0) -> None:
+        """
+        Convenience helper:
+        - subscribe just to live pH readings and replies for a short window
+        - requires ensure_connected() first (loop running)
+        """
+        c = self._require()
+        if not getattr(self, "_loop_running", False):
+            raise RuntimeError("watch_ph() requires the background loop. Call ensure_connected() first.")
+
+        to_sub = [f"{self.base}/ph", f"{self.base}/reply"]
+        for t in to_sub:
+            c.subscribe(t, qos=0)
+
+        def _on_msg(_client: mqtt.Client, _userdata, msg: mqtt.MQTTMessage) -> None:
+            try:
+                print(f"{msg.topic} {msg.payload.decode('utf-8', errors='ignore')}")
+            except Exception:
+                print(f"{msg.topic} <{len(msg.payload)} bytes>")
+
+        old = c.on_message
+        c.on_message = _on_msg
+        try:
+            time.sleep(seconds)
+        finally:
+            c.on_message = old
+            for t in to_sub:
+                c.unsubscribe(t)
 
 # -----------------------------------------------------------------------------
 # Example usage (only when running this file directly)
@@ -706,25 +807,54 @@ if __name__ == "__main__":
     beacon.start()
 
     # Device wrappers
-    pumps = PumpMQTT(broker=broker, username="pump1", password="pump",
-                     base_topic="pumps/01", client_id="pyctl-pumps")
-    ultra = UltraMQTT(broker=broker, username="ultra1", password="ultra",
-                      base_topic="ultra/01", client_id="pyctl-ultra")
-    heat  = HeatMQTT (broker=broker, username="heat1", password="heat",
-                      base_topic="heat/01",  client_id="pyctl-heat")
+    pumps = PumpMQTT(
+        broker=broker,
+        username="pump1",
+        password="pump",
+        base_topic="pumps/01",
+        client_id="pyctl-pumps",
+    )
+    ultra = UltraMQTT(
+        broker=broker,
+        username="ultra1",
+        password="ultra",
+        base_topic="ultra/01",
+        client_id="pyctl-ultra",
+    )
+    heat = HeatMQTT(
+        broker=broker,
+        username="heat1",
+        password="heat",
+        base_topic="heat/01",
+        client_id="pyctl-heat",
+    )
+    ph = PhMQTT(
+        broker=broker,
+        username="ph1",
+        password="ph",
+        base_topic="ph/01",
+        client_id="pyctl-ph",
+    )
 
     pumps.ensure_connected()
     ultra.ensure_connected()
     heat.ensure_connected()
+    ph.ensure_connected()
 
     try:
-        # Demo actions
+        # --------- Pumps demo ---------
         pumps.on(1, duration_ms=1500)
         time.sleep(2)
 
-        ultra.on_for(1, 2000)
+        # --------- Ultrasound demo ---------
+        # You previously called ultra.on_for(), but UltraMQTT doesn't have on_for().
+        # EITHER:
+        #   ultra.on(1, duration_ms=2000)
+        # OR add an on_for() helper in UltraMQTT that just calls on(...).
+        ultra.on(1, duration_ms=2000)
         time.sleep(1)
 
+        # --------- Heaters demo ---------
         heat.set_target(1, 42.0)
         heat.pid_on(1)
         try:
@@ -737,13 +867,26 @@ if __name__ == "__main__":
         heat.set_pwm(1, 0)
         heat.off(1)
 
+        # --------- pH demo ---------
+        # ask for a single reading
+        ph.oneshot()
+        # watch pH and reply messages for a few seconds
+        ph.watch_ph(seconds=5.0)
+
+        # start periodic polling every 5 seconds
+        ph.start_poll(5000)
+        time.sleep(6)
+        # stop periodic polling
+        ph.stop_poll()
+
     finally:
-        # Best-effort tidy OFF on graceful exit (safety on crash is via LWT)
-        _best_effort_all_off(pumps, ultra, heat)
+        # Best-effort tidy OFF on graceful exit
+        _best_effort_all_off(pumps, ultra, heat, ph)
 
         pumps.disconnect()
         ultra.disconnect()
         heat.disconnect()
+        ph.disconnect()
 
         beacon.stop()
         stop_broker(proc)
