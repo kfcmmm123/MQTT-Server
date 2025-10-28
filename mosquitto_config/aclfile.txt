@@ -70,6 +70,20 @@ topic write heat/01/target/#
 topic read pyctl/status
 topic read pyctl/heartbeat
 
+# === pH ESP32 =========================================
+user ph1
+# Receives control commands
+topic read ph/01/cmd/#
+
+# Publishes sensor and system data
+topic write ph/01/status
+topic write ph/01/heartbeat
+topic write ph/01/ph
+topic write ph/01/reply
+
+# Monitors controller beacon
+topic read pyctl/status
+topic read pyctl/heartbeat
 
 #################################################################
 
