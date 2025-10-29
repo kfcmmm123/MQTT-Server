@@ -2,15 +2,7 @@
 
 This document explains how to use the **Python MQTT API (`iot_mqtt.py`)** to control ESP32-POE-ISO device nodes (pumps, heaters, ultrasonic drivers) via MQTT communication.
 
-## Quick Links
-
-- **[Broker Setup](../mosquitto_config/README.md)** - Mosquitto installation and configuration
-- **[Device Firmware](../devices/)** - ESP32 firmware for pumps, heaters, and ultrasonic controllers
-- **[Hardware Assembly](../hardware/README.md)** - 3D printable enclosures and assembly
-
----
-
-## 1. Overview
+## Overview
 
 The MQTT network consists of:
 - **Broker:** Mosquitto server (usually on your PC or Raspberry Pi)
@@ -19,104 +11,15 @@ The MQTT network consists of:
 
 Each device uses authentication and a dedicated topic subtree for clean separation.
 
-## 2. Installation
-
-```bash
-# Install Python dependencies
-pip install paho-mqtt>=1.6.0
-
-# Or use requirements.txt
-pip install -r requirements.txt
-```
-
----
-
-## 3. Broker Setup (Mosquitto)
-
-> **Note**: For detailed broker setup instructions, see [Mosquitto Configuration Guide](../mosquitto_config/README.md).
-
-### Installation
-**Windows**
-```bash
-choco install mosquitto
-````
-
-**Linux**
-
-```bash
-sudo apt install mosquitto mosquitto-clients
-sudo systemctl enable mosquitto
-```
-
-### Configuration
-
-Edit `mosquitto_config/mosquitto.conf`:
-
-```conf
-listener 1883
-allow_anonymous false
-password_file "C:/Program Files/mosquitto/passwd"
-acl_file      "C:/Program Files/mosquitto/aclfile.txt"
-persistence true
-persistence_location "C:/Program Files/mosquitto/data/"
-```
-
-### Create Users
-
-```bash
-mosquitto_passwd -c passwd pyctl-controller
-mosquitto_passwd    passwd pump1
-mosquitto_passwd    passwd ultra1
-mosquitto_passwd    passwd heat1
-```
-
-### Launch Broker
-
-```bash
-mosquitto -v -c "C:/Program Files/mosquitto/mosquitto.conf"
-```
-
----
-
-## 3. Access Control
-
-Example ACL (`mosquitto_config/aclfile.txt`):
-
-```text
-# Controller
-user pyctl-controller
-topic write pyctl/#
-topic read  pumps/01/#
-topic read  ultra/01/#
-topic read  heat/01/#
-
-# Pump
-user pump1
-topic read pyctl/#
-topic write pumps/01/#
-
-# Ultrasonic
-user ultra1
-topic read pyctl/#
-topic write ultra/01/#
-
-# Heater
-user heat1
-topic read pyctl/#
-topic write heat/01/#
-```
-
----
-
-## 4. Python MQTT Library (`iot_mqtt.py`)
+## Python MQTT Library (`iot_mqtt.py`)
 
 ### Quick Example
 
 ```python
 # iot_mqtt_demo.py
 import time
-from iot_mqtt import start_broker_if_needed, stop_broker
-from iot_mqtt import PumpMQTT, UltraMQTT, HeatMQTT
+from iot_mqtt import start_broker_if_needed, stop_broker, _best_effort_all_off
+from iot_mqtt import PumpMQTT, UltraMQTT, HeatMQTT, PhMQTT, ControllerBeacon
 
 # Optional: start a local Mosquitto on Windows if not already running
 proc = start_broker_if_needed()  # comment if your broker is already running
@@ -137,6 +40,8 @@ ultra = UltraMQTT(broker="192.168.0.101", username="ultra1", password="ultra",
                   base_topic="ultra/01", client_id="pyctl-ultra")
 heat  = HeatMQTT(broker="192.168.0.101", username="heat1",  password="heat",
                  base_topic="heat/01",  client_id="pyctl-heat")
+ph    = PhMQTT(broker="192.168.0.101", username="ph1",    password="ph",
+               base_topic="ph/01",    client_id="pyctl-ph")
 
 # Connect + start background loops
 pumps.ensure_connected(); ultra.ensure_connected(); heat.ensure_connected()
@@ -146,6 +51,7 @@ time.sleep(1)  # let subscriptions settle
 pumps.status(seconds=2.0)
 ultra.status(seconds=2.0)
 heat.status(seconds=2.0)
+ph.status(seconds=2.0)
 
 # ---- Control examples ----
 # Pumps
@@ -175,8 +81,16 @@ heat.pid_off(1)
 heat.set_pwm(1, 0)
 heat.off(1)
 
+# pH examples
+ph.oneshot(seconds=3.0)          # single reading
+ph.watch_poll(2000, seconds=6)   # poll every 2s for 6s, auto STOP
+
 # Cleanup
-pumps.disconnect(); ultra.disconnect(); heat.disconnect()
+_best_effort_all_off(pumps, ultra, heat, ph)
+
+pumps.disconnect(); ultra.disconnect(); heat.disconnect(); ph.disconnect()
+beacon.stop()
+
 stop_broker(proc)
 ```
 
@@ -192,7 +106,7 @@ stop_broker(proc)
 
 ---
 
-## 5. Topic Map Summary
+## Topic Map Summary
 
 | Topic               | Direction        | Description               |
 | ------------------- | ---------------- | ------------------------- |
@@ -207,7 +121,7 @@ stop_broker(proc)
 
 ---
 
-## 6. Safety Behavior
+## Safety Behavior
 
 | Condition               | Action                                            |
 | ----------------------- | ------------------------------------------------- |
@@ -219,7 +133,7 @@ stop_broker(proc)
 
 ---
 
-## 7. Troubleshooting
+## Troubleshooting
 
 * **Broker rejects connection:** recheck user/pass and ACL.
 * **No telemetry:** verify ESP node IP and Ethernet link.
@@ -228,7 +142,7 @@ stop_broker(proc)
 
 ---
 
-## 8. References
+## References
 
 * [Mosquitto Docs](https://mosquitto.org/documentation/)
 * [Paho MQTT Python Client](https://pypi.org/project/paho-mqtt/)

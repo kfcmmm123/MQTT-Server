@@ -10,27 +10,12 @@ This folder contains the **Mosquitto MQTT broker configuration** and **access co
 ## Quick Links
 
 - **[Python API Documentation](../iot_mqtt/README.md)** - Control ESP32 devices via Python
-- **[Device Firmware](../devices/)** - ESP32 firmware for pumps, heaters, ultrasonic controllers
+- **[Device Firmware](../devices/)** - ESP32 firmware for pumps, heaters, ultrasonic, and pH controllers
 - **[Hardware Assembly](../hardware/README.md)** - 3D printable enclosures and assembly
 
 ---
 
-## 1) Install Mosquitto
-
-**Windows**
-- Download the official installer or use `choco install mosquitto`.
-- Ensure the service has permission to read the config and data paths.
-
-**Ubuntu/Debian**
-```bash
-sudo apt update
-sudo apt install mosquitto mosquitto-clients
-sudo systemctl enable mosquitto
-````
-
----
-
-## 2) Configuration File
+## Configuration Schema
 
 Edit paths in `mosquitto.conf` to match your machine (Windows example shown):
 
@@ -56,7 +41,7 @@ log_type all
 
 ---
 
-## 3) Users & Passwords
+## Users & Passwords
 
 Create users with `mosquitto_passwd`.
 **Important:** `-c` creates/overwrites the file—use it *once*.
@@ -69,13 +54,14 @@ mosquitto_passwd -c passwd pyctl-controller
 mosquitto_passwd    passwd pump1
 mosquitto_passwd    passwd ultra1
 mosquitto_passwd    passwd heat1
+mosquitto_passwd    passwd ph1
 ```
 
 Move `passwd` to the path referenced in `mosquitto.conf`.
 
 ---
 
-## 4) ACL (Access Control)
+## ACL (Access Control)
 
 `aclfile.txt` grants the minimum required permissions:
 
@@ -86,6 +72,7 @@ topic write pyctl/#
 topic read  pumps/01/#
 topic read  ultra/01/#
 topic read  heat/01/#
+topic read  ph/01/#
 
 # Pump device
 user pump1
@@ -112,46 +99,22 @@ topic write heat/01/status
 topic write heat/01/heartbeat
 topic write heat/01/temp/#
 topic write heat/01/target/#
+ 
+# pH device
+user ph1
+topic read  pyctl/#
+topic read  ph/01/cmd
+topic write ph/01/ph
+topic write ph/01/reply
+topic write ph/01/status
+topic write ph/01/heartbeat
 ```
 
 > If you create more nodes (e.g., `pumps/02`), add matching blocks here.
 
 ---
 
-## 5) Start the Broker
-
-**Windows (console):**
-
-```powershell
-"C:\Program Files\mosquitto\mosquitto.exe" -v -c "C:\Program Files\mosquitto\mosquitto.conf"
-```
-
-**Linux (service):**
-
-```bash
-sudo systemctl restart mosquitto
-sudo journalctl -u mosquitto -f
-```
-
----
-
-## 6) Smoke Test
-
-Open two terminals:
-
-```bash
-# Terminal A – subscribe to everything (dev use only)
-mosquitto_sub -h 127.0.0.1 -t "#" -v -u pyctl-controller -P controller
-
-# Terminal B – publish a test message
-mosquitto_pub -h 127.0.0.1 -t "pyctl/heartbeat" -m "1" -u pyctl-controller -P controller
-```
-
-You should see the message in Terminal A.
-
----
-
-## 7) Optional: TLS (Encrypted MQTT)
+## Optional: TLS (Encrypted MQTT)
 
 1. Generate or obtain certificates (self-signed or from your CA).
 2. Add to `mosquitto.conf`:
@@ -168,7 +131,7 @@ require_certificate false
 
 ---
 
-## 8) Persistence & Backups
+## Persistence & Backups
 
 * **Retained messages** (e.g., `status`, `target/`) are saved to the persistence store.
 * Back up the directory referenced by `persistence_location` regularly.
@@ -176,7 +139,7 @@ require_certificate false
 
 ---
 
-## 9) Troubleshooting
+## Troubleshooting
 
 * **`Not authorized`** → user doesn’t match the ACL; verify username, topic base, and that you didn’t recreate the password file with `-c`.
 * **No retained messages** → persistence disabled or the broker lacks write permission to the persistence directory.
@@ -185,7 +148,7 @@ require_certificate false
 
 ---
 
-## 10) Security Hardening Checklist
+## Security Hardening Checklist
 
 * [x] `allow_anonymous false`
 * [x] Unique users per device class

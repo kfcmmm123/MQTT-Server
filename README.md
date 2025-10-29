@@ -50,6 +50,10 @@ MQTT-Server/
 │   │   ├── Ultrasonic_Safety_client.ino        # Safety-enabled version for single relay
 │   │   └── README.md                # Ultrasonic setup guide
 │   │
+│   ├── ph/                          # pH probe monitor/controller
+│   │   ├── pH_Safety_client.ino     # Safety-enabled pH firmware
+│   │   └── README.md                # pH setup guide
+│   │
 │   └── heater/                      # Heater control with PID
 │       ├── Heater_client.ino        # Main heater firmware
 │       ├── Heater_Safety_client.ino # Safety-enabled version
@@ -75,20 +79,20 @@ MQTT-Server/
 ## System Architecture
 
 ```text
-                 ┌─────────────────────────────┐
-                 │         MQTT Broker         │
-                 │        (Mosquitto)          │
-                 │       Port 1883 (TCP)       │
-                 └──────────────┬──────────────┘
-                                │
-                         Ethernet TCP/IP
-          ┌─────────────────────┼────────────────────┐
-          │                     │                    │                    
-┌─────────┴──────────┐  ┌───────┴────────┐   ┌───────┴─────────┐
-│ ESP32-POE-ISO      │  │ ESP32-POE-ISO  │   │ ESP32-POE-ISO   │
-│ Node: pumps/01     │  │ Node: ultra/01 │   │ Node: heat/01   │
-│ Relays (pumps)     │  │ Relays (ultra) │   │ SSR + ADS1015   │
-└────────────────────┘  └────────────────┘   └─────────────────┘
+                            ┌─────────────────────────────┐
+                            │         MQTT Broker         │
+                            │        (Mosquitto)          │
+                            │       Port 1883 (TCP)       │
+                            └──────────────┬──────────────┘
+                                           │
+                                    Ethernet TCP/IP
+          ┌─────────────────────┬──────────┴─────────┬─────────────────────┐
+          │                     │                    │                     │
+┌─────────┴──────────┐  ┌───────┴────────┐   ┌───────┴─────────┐   ┌───────┴─────────┐
+│ ESP32-POE-ISO      │  │ ESP32-POE-ISO  │   │ ESP32-POE-ISO   │   │ ESP32-POE-ISO   │
+│ Node: pumps/01     │  │ Node: ultra/01 │   │ Node: heat/01   │   │ Node: ph/01     │
+│ Relays (pumps)     │  │ Relays (ultra) │   │ SSR + ADS1015   │   │ EZO pH meter    │
+└────────────────────┘  └────────────────┘   └─────────────────┘   └─────────────────┘
 
 ````
 
@@ -101,6 +105,7 @@ MQTT-Server/
 | **Pump Node**       | Controls up to 4 DC peristaltic pumps via Qwiic relay | `devices/pump/Pump_Safety_client.ino`|
 | **Ultrasonic Node** | Controls 2 ultrasonic driver boards via Qwiic relay    | `devices/ultrasonic/Ultrasonic_Safety_client.ino` |
 | **Heater Node**     | Controls 2 heaters via Qwiic SSR + thermistor sensing + PID + safety brake | `devices/heater/Heater_Safety_client.ino`    |
+| **pH Node**         | Publishes pH readings; supports oneshot and periodic polling with safety | `devices/ph/pH_Safety_client.ino` |
 
 Each firmware implements MQTT topic handlers, safety gating, and local timers for timed activation (`ON:<ms>`).
 
@@ -132,70 +137,100 @@ Each firmware implements MQTT topic handlers, safety gating, and local timers fo
 ## Quick Start
 
 ### Prerequisites
-- ESP32-POE-ISO boards (Olimex)
-- SparkFun Qwiic relay modules
 - Python 3.8+ with `paho-mqtt` library
 - Arduino IDE with ESP32 support
+- ESP32-POE-ISO boards (Olimex)
+- SparkFun Qwiic relay modules
+- Ethernet switch and router
+- EZO pH probe (optional, for pH readings)
 
-### 1. Setup MQTT Broker
+### 1. Network Setup
+1. **Connect all ESP32-POE-ISO devices to an Ethernet switch**
+2. **Connect switch to router** (or use router's built-in switch)
+3. **Find broker IP address:**
+   ```bash
+   # Windows
+   ipconfig
+   
+   # Linux/Mac
+   ip addr show
+   # or
+   ifconfig
+   ```
+   Note the IP address (e.g., `192.168.1.100`) for the next steps.
+
+### 2. Install Mosquitto Broker
 ```bash
-# Install Mosquitto (Windows)
+# Windows
 choco install mosquitto
 
-# Or Linux
+# Linux
 sudo apt install mosquitto mosquitto-clients
-
-# Configure broker (see mosquitto_config/README.md)
-mosquitto -v -c mosquitto_config/mosquitto.conf
 ```
 
-### 2. Flash ESP32 Devices
-1. Open Arduino IDE
-2. Install ESP32 board support
-3. Flash firmware from `devices/` folders:
+### 3. Configure Broker
+1. **Copy configuration files:**
+   ```bash
+   # Copy to Mosquitto directory
+   cp mosquitto_config/mosquitto.conf "C:/Program Files/mosquitto/"
+   cp mosquitto_config/aclfile.txt "C:/Program Files/mosquitto/"
+   ```
+
+2. **Create users:**
+   ```bash
+   cd "C:/Program Files/mosquitto/"
+   mosquitto_passwd -c passwd pyctl-controller
+   mosquitto_passwd    passwd pump1
+   mosquitto_passwd    passwd ultra1
+   mosquitto_passwd    passwd heat1
+   mosquitto_passwd    passwd ph1
+   ```
+
+> Note: If you use custom usernames/passwords, update both `mosquitto_config/aclfile.txt` and the credentials in the notebook/code.
+
+3. **Start broker:**
+   ```bash
+   mosquitto -v -c "C:/Program Files/mosquitto/mosquitto.conf"
+   ```
+   > You can also skip this step and start the broker inside the Jupyter notebook (recommended)
+
+### 4. Flash ESP32 Devices
+1. **Open Arduino IDE** and install ESP32 board support
+2. **Install required libraries:**
+   - `PubSubClient` (MQTT)
+   - `SparkFun_Qwiic_Relay` (relay control)
+   - `Wire` (I²C)
+3. **Update broker IP** in each firmware file to match your network
+4. **Flash firmware:**
     - **Pump Node**: `devices/pump/Pump_Safety_client.ino`
     - **Ultrasonic Node**: `devices/ultrasonic/Ultrasonic_Safety_client.ino`
-    - **Heater Node**: `devices/heater/Heater_Safety_client.ino` 
+    - **Heater Node**: `devices/heater/Heater_Safety_client.ino`
+    - **pH Node**: `devices/ph/pH_Safety_client.ino`
+   
+   **Note**: ESP32 firmware automatically generates unique client IDs based on MAC address (e.g., `pumps01-A1B2C3D4`). This prevents client ID conflicts when multiple devices connect.
+   
+5. **Monitor connection:**
+   - Use Arduino Serial Monitor to confirm MQTT connection and command logs
 
-### 3. Run Python Controller
-```bash
-# Install dependencies
-pip install paho-mqtt
+### 5. Run Jupyter Notebook
+1. **Open `iot_mqtt/MQTT_Demo.ipynb`**
 
-# Run example
-python iot_mqtt/iot_mqtt.py
-```
+2. **Update IP and credentials** in the notebook to match your broker and ACL users
 
-### 4. Monitor System
-```bash
-# Watch all MQTT traffic
-mosquitto_sub -v -t "#" -u pyctl-controller -P controller
-```
+3. **Execute cells block by block:**
+   - **Cell 0**: Install library
+   - **Cell 1**: Import libraries and start broker (optional if already running)
+   - **Cell 2**: Create device connections
+   - **Cell 3**: Test pump control
+   - **Cell 4**: Test ultrasonic control
+   - **Cell 5**: Test heater PID control
+   - **Cell 6**: Test pH monitoring
+   - **Cell 7**: Cleanup and shutdown
 
-### 5. Test Devices
-```python
-import time
-from iot_mqtt import PumpMQTT, UltraMQTT, HeatMQTT
-
-# Control pumps
-pumps = PumpMQTT(broker="192.168.0.100", username="pump1", password="pump")
-pumps.ensure_connected()
-pumps.on(1, 2000)  # Pump 1 for 2 seconds
-
-# Control ultrasonic drivers
-ultra = UltraMQTT(broker="192.168.0.100", username="ultra1", password="ultra")
-ultra.ensure_connected()
-ultra.on(1, 2000)  # Ultrasonic 1 for 2 seconds
-
-# Control heaters with PID
-heat = HeatMQTT(broker="192.168.0.100", username="heat1", password="heat")
-heat.ensure_connected()
-heat.set_target(1, 42.0)  # Set 42°C target
-heat.pid_on(1)            # Enable PID control
-time.sleep(2)             # On for 2 seconds
-heat.set_target(1, 42.0)  # Set 42°C target
-heat.pid_on(1)            # Enable PID control
-```
+4. **Monitor output logs:**
+   - Check Jupyter cell outputs for connection/status
+   - Watch the Mosquitto console (or service logs) for MQTT traffic
+   - Verify device status messages in notebook output
 
 ---
 
@@ -210,6 +245,7 @@ heat.pid_on(1)            # Enable PID control
 - **[Pump Controllers](./devices/pump/README.md)** - 4-pump relay control setup and wiring
 - **[Ultrasonic Controllers](./devices/ultrasonic/README.md)** - AC driver control via relays
 - **[Heater Controllers](./devices/heater/README.md)** - Dual SSR + PID temperature control
+- **[pH Controller](./devices/ph/README.md)** - pH probe monitoring and commands
 
 ### Development Resources
 - **[Jupyter Demo](./iot_mqtt/MQTT_Demo.ipynb)** - Interactive examples and testing
@@ -228,10 +264,20 @@ heat.pid_on(1)            # Enable PID control
 - Confirm MQTT credentials match ACL configuration
 
 **Broker stops responding with continuous client reconnections**
-> **IMPORTANT**: This indicates a critical broker failure!
-- Stop the broker immediately and wait until `netstat -ano | findstr :1883` shows no output
-- Restart Jupyter/kernel to clear client connections
-- **Root cause**: Server failure causes clients to reconnect with same client IDs, creating connection conflicts that overwhelm the broker
+> **IMPORTANT**: This indicates a critical broker failure or client ID conflict!
+
+**Root cause**: When a client disconnects without properly closing, the broker retains the session. If the client (or server) tries to reconnect with the same client ID, the broker attempts to connect both the old session and the new connection, causing a conflict loop where it keeps kicking one and connecting the other.
+
+Prevention (already implemented):
+- Python clients use unique client IDs (`base-hostname-PID`) and MQTT v5 with clean start + session expiry 0
+- ESP32 firmware uses MAC-based unique client IDs (e.g., `pumps01-A1B2C3D4`)
+- Broker expires persistent client sessions after 1 day of inactivity
+
+Immediate fix:
+1. Stop the broker immediately: `taskkill /IM mosquitto.exe /F` (Windows) or `sudo systemctl stop mosquitto` (Linux)
+2. Wait until `netstat -ano | findstr :1883` shows no output
+3. Restart Jupyter/kernel to clear Python client connections
+4. Restart the broker: `mosquitto -v -c mosquitto.conf`
 
 **Broker startup fails**
 - Check for existing broker process: `netstat -ano | findstr :1883`
