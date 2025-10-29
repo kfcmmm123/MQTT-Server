@@ -23,14 +23,15 @@
       ph/01/status      retained "ONLINE"/"OFFLINE"
       ph/01/heartbeat   "1" every HEARTBEAT_MS
 
-  Controller supervision (subscribe):
-    pyctl/status   : retained "ONLINE"/"OFFLINE" (controller's LWT)
-    pyctl/heartbeat: "1" periodically
+  Supervision topics (ESP32 subscribes, Python publishes):
+      pyctl/status      retained "ONLINE"/"OFFLINE" (controller LWT)
+      pyctl/heartbeat   "1" periodically
 
   Safety:
-    - If controller heartbeat is missing > CTRL_TIMEOUT_MS → put probe to sleep
-    - If MQTT can't reconnect for MQTT_DOWN_OFF_MS → put probe to sleep
-    - If Ethernet link drops → put probe to sleep
+    - If controller heartbeat is missing > CTRL_TIMEOUT_MS → stop polling + pause
+    - If MQTT can't reconnect for MQTT_DOWN_OFF_MS → stop polling + pause
+    - If Ethernet link drops → stop polling + pause
+    - Deep "Sleep" command is still available but only used for final shutdown.
 
   Notes:
     - We keep the probe in "quiet" mode (C,0 and *OK,0).
@@ -39,26 +40,26 @@
 */
 
 #include <ETH.h>
+#include <Ezo_uart.h>
+#include <PubSubClient.h>
 #include <WiFi.h>
 #include <WiFiClient.h>
-#include <PubSubClient.h>
-#include <Ezo_uart.h>
 
 /************ MQTT broker config ************/
-const char* MQTT_BROKER_IP = "192.168.0.100";
+const char *MQTT_BROKER_IP = "192.168.0.100";
 const uint16_t MQTT_PORT = 1883;
-const char* MQTT_USER = "ph1";
-const char* MQTT_PASS = "ph";
-const char* DEV_BASE = "ph/01";
+const char *MQTT_USER = "ph1";
+const char *MQTT_PASS = "ph";
+const char *DEV_BASE = "ph/01";
 
 /************ Supervision topics (from Python controller) ************/
-const char* CTRL_STATUS_TOPIC = "pyctl/status"; // retained ONLINE/OFFLINE (LWT)
-const char* CTRL_HEARTBEAT_TOPIC = "pyctl/heartbeat"; // "1" periodically
+const char *CTRL_STATUS_TOPIC = "pyctl/status";     // retained ONLINE/OFFLINE (LWT)
+const char *CTRL_HEARTBEAT_TOPIC = "pyctl/heartbeat"; // "1" periodically
 
 /************ Safety timeouts (tune as needed) ************/
-const uint32_t CTRL_TIMEOUT_MS = 25000; // if no controller beat -> sleep probe
+const uint32_t CTRL_TIMEOUT_MS = 25000; // if no controller beat -> pause probe
 const uint32_t MQTT_DOWN_OFF_MS =
-    20000;                           // if MQTT reconnect stalls -> sleep probe
+    20000;                           // if MQTT reconnect stalls -> pause probe
 const uint32_t HEARTBEAT_MS = 15000; // ESP heartbeat cadence
 
 /************ Ethernet (Olimex ESP32-POE-ISO) ************/
@@ -76,7 +77,10 @@ bool eth_ready = false;
 char clientId[40];
 
 Ezo_uart PH(Serial1, "pH");
+
 bool ph_ok = false;
+bool ph_enabled = true;     // are we allowed to actively poll right now?
+bool ph_sleeping = false;   // have we explicitly commanded "Sleep"?
 
 uint32_t lastBeat = 0;        // last time we sent heartbeat
 uint32_t lastCtrlBeat = 0;    // last controller heartbeat we saw
@@ -95,30 +99,109 @@ void ezoCommand(const char *cmd, char *respOut, size_t respLen) {
   PH.send_cmd(cmd, respOut, respLen);
 }
 
+// Debug-print reply so we can see weird strings like "*WA", "*SL"
+void debugPrintRaw(const char *label, const char *buf) {
+  Serial.printf("[DEBUG] %s raw='%s' hex=", label, buf);
+  size_t n = strlen(buf);
+  for (size_t i = 0; i < n; i++) {
+    Serial.printf("%02X ", (uint8_t)buf[i]);
+  }
+  Serial.println();
+}
+
+// Try to wake the probe if we previously put it to Sleep
+void wakeProbe() {
+  if (!ph_sleeping) {
+    return; // if we never deep-slept it, skip
+  }
+
+  Serial.println("[DEBUG] wakeProbe(): sending blank cmd + flushing");
+  // send a blank command to wake Atlas EZO UART
+  PH.send_cmd_no_resp("");
+  delay(200);
+
+  PH.flush_rx_buffer();
+  delay(50);
+
+  // query "Status,?" just to confirm it's alive
+  char st[64] = {0};
+  PH.send_cmd("Status,?", st, sizeof(st));
+  debugPrintRaw("Status", st);
+
+  if (strlen(st) > 0) {
+    ph_sleeping = false;
+    Serial.println("[DEBUG] wakeProbe(): probe responded, clearing ph_sleeping");
+  }
+}
+
 // Take one blocking reading using "R" and publish it
 void takeOneReadingAndPublish() {
+  if (!ph_enabled) {
+    Serial.println("[DEBUG] Skipping read: ph_enabled == false");
+    return;
+  }
+
+  // If it was deep slept, try to wake it
+  wakeProbe();
+
   char resp[32] = {0};
   ezoCommand("R", resp, sizeof(resp));
+  debugPrintRaw("Reading", resp);
 
   float val = atof(resp);
-  bool plausible = (val > 0.0f && val < 20.0f); // rough sanity gate
+  bool plausible = (val > 0.0f && val < 20.0f); // rough ~0-14 sanity check
 
   if (!plausible) {
     Serial.printf("[WARN] weird pH '%s'\n", resp);
+  } else {
+    Serial.printf("[OK] pH %.3f\n", val);
   }
+
+  // publish raw text (even if weird); controller can decide what to do
   publishPH(resp);
 }
 
-// Put the probe to sleep / safe idle
-void sleepPH(const char *reason) {
-  Serial.printf("[SAFETY] Sleep pH (%s)\n", reason ? reason : "unspecified");
-  // stop polling
+// Pause polling + disable further reads, but DO NOT send "Sleep".
+// This is for transient safety events (controller offline, Ethernet down, etc.).
+void safePausePH(const char *reason) {
+  Serial.printf("[SAFETY] safePausePH (%s)\n", reason ? reason : "unspecified");
+
   pollIntervalMs = 0;
-  // tell probe to stop continuous outputs just in case
+  ph_enabled = false;
+
+  // stop continuous output just in case
   PH.send_cmd_no_resp("C,0");
   delay(50);
-  // sleep mode (low power)
+
+  // publish reason to /reply so controller can log it
+  if (mqtt.connected()) {
+    char t[48];
+    snprintf(t, sizeof(t), "%s/reply", DEV_BASE);
+    mqtt.publish(t, reason ? reason : "pause", false);
+  }
+}
+
+// Full low-power sleep. Use ONLY for final shutdown / hard fail.
+void sleepPH(const char *reason) {
+  Serial.printf("[SAFETY] sleepPH DEEP (%s)\n", reason ? reason : "unspecified");
+
+  pollIntervalMs = 0;
+  ph_enabled = false;
+
+  // stop any continuous output
+  PH.send_cmd_no_resp("C,0");
+  delay(50);
+
+  // real Sleep (low power, will answer "*SL"/"*WA" until woken)
   PH.send_cmd_no_resp("Sleep");
+  ph_sleeping = true;
+
+  // final reason message
+  if (mqtt.connected()) {
+    char t[48];
+    snprintf(t, sizeof(t), "%s/reply", DEV_BASE);
+    mqtt.publish(t, reason ? reason : "sleep", false);
+  }
 }
 
 /************ Publishing helpers ************/
@@ -159,39 +242,43 @@ void ensureMqtt() {
     uint32_t id = (uint32_t)ESP.getEfuseMac();
     snprintf(clientId, sizeof(clientId), "ph01-%08X", id);
 
-    Serial.printf("[MQTT] Connecting to %s:%d as %s...\n", MQTT_BROKER_IP,
-                  MQTT_PORT, clientId);
+    Serial.printf("[MQTT] Connecting to %s:%d as %s...\n",
+                  MQTT_BROKER_IP, MQTT_PORT, clientId);
 
     if (mqtt.connect(clientId, MQTT_USER, MQTT_PASS,
                      (String(DEV_BASE) + "/status").c_str(), 1, true,
                      "OFFLINE")) {
+
       Serial.println("[MQTT] Connected successfully!");
       lastMqttHealthy = millis();
 
       publishStatus("ONLINE");
 
-      // Device command subscription
+      // we're online again; allow polling (but don't auto-start interval)
+      ph_enabled = true;
+
+      // subscribe to command/control topics
       char cmdTopic[48];
       snprintf(cmdTopic, sizeof(cmdTopic), "%s/cmd", DEV_BASE);
       mqtt.subscribe(cmdTopic, 0);
       Serial.printf("[MQTT] Subscribed: %s\n", cmdTopic);
 
-      // Supervision subscriptions
       mqtt.subscribe(CTRL_STATUS_TOPIC, 1);
       mqtt.subscribe(CTRL_HEARTBEAT_TOPIC, 0);
-      Serial.printf("[MQTT] Subscribed: %s, %s\n", CTRL_STATUS_TOPIC,
-                    CTRL_HEARTBEAT_TOPIC);
+      Serial.printf("[MQTT] Subscribed: %s, %s\n",
+                    CTRL_STATUS_TOPIC, CTRL_HEARTBEAT_TOPIC);
 
-      // don't instantly freak out on boot/reconnect
+      // don't instantly alarm on boot/reconnect
       lastCtrlBeat = millis();
       ctrlSeen = false;
 
     } else {
       Serial.printf("[MQTT] Failed (rc=%d). Retrying...\n", mqtt.state());
       delay(1200);
-      // If we can't get MQTT for a while, go safe
+
+      // If we can't get MQTT back for too long, pause probe for safety
       if (millis() - lastMqttHealthy > MQTT_DOWN_OFF_MS) {
-        sleepPH("MQTT reconnect timeout");
+        safePausePH("MQTT reconnect timeout");
       }
     }
   }
@@ -204,12 +291,11 @@ void handleCmd(const char *payload) {
   // START:<ms>
   if (strncasecmp(payload, "START:", 6) == 0) {
     uint32_t ms = atoi(payload + 6);
-    if (ms < 2000)
-      ms = 2000; // don't hammer UART super fast
-    if (ms > 99000)
-      ms = 99000; // don't let it go insanely long
+    if (ms < 2000)  ms = 2000;   // sanity lower bound
+    if (ms > 99000) ms = 99000;  // sanity upper bound
     pollIntervalMs = ms;
-    lastPollMs = 0; // force immediate sample next loop
+    lastPollMs = 0; // force immediate sample
+    ph_enabled = true;
     Serial.printf("[POLL] start interval=%lu ms\n", (unsigned long)ms);
     return;
   }
@@ -258,10 +344,11 @@ void onMqtt(char *topic, byte *payload, unsigned int len) {
     Serial.printf("[CTRL] status='%s'\n", msg);
     if (strcasecmp(msg, "OFFLINE") == 0) {
       ctrlSeen = false;
-      sleepPH("controller LWT OFFLINE");
+      safePausePH("controller LWT OFFLINE");
     } else if (strcasecmp(msg, "ONLINE") == 0) {
       lastCtrlBeat = millis();
       ctrlSeen = true;
+      ph_enabled = true; // controller back, allow reads again
     }
     return;
   }
@@ -282,24 +369,29 @@ void onNetEvent(WiFiEvent_t event) {
     ETH.setHostname("esp32-ph");
     Serial.println("[ETH] START");
     break;
+
   case ARDUINO_EVENT_ETH_CONNECTED:
     Serial.println("[ETH] LINK UP");
     break;
+
   case ARDUINO_EVENT_ETH_GOT_IP:
     eth_ready = true;
     Serial.print("[ETH] IP: ");
     Serial.println(ETH.localIP());
     break;
+
   case ARDUINO_EVENT_ETH_DISCONNECTED:
     Serial.println("[ETH] LINK DOWN");
     eth_ready = false;
-    sleepPH("Ethernet link down");
+    safePausePH("Ethernet link down");
     break;
+
   case ARDUINO_EVENT_ETH_STOP:
     Serial.println("[ETH] STOP");
     eth_ready = false;
-    sleepPH("Ethernet stopped");
+    safePausePH("Ethernet stopped");
     break;
+
   default:
     break;
   }
@@ -318,7 +410,6 @@ void setup() {
             ETH_POWER_PIN, ETH_CLK_MODE);
 
   // Bring up UART to Atlas EZO pH
-  // IMPORTANT: this matches your working test sketch
   Serial1.begin(9600, SERIAL_8N1, 36, 4); // RX=36, TX=4
   delay(500);
 
@@ -355,7 +446,6 @@ void setup() {
   lastMqttHealthy = millis();
   ctrlSeen = false;
 
-  // no polling yet
   pollIntervalMs = 0;
   lastPollMs = 0;
 
@@ -366,7 +456,7 @@ void setup() {
 void loop() {
   uint32_t now = millis();
 
-  // keep MQTT alive, or go safe if we can't
+  // keep MQTT alive, or try to reconnect
   if (eth_ready && !mqtt.connected()) {
     ensureMqtt();
   }
@@ -388,7 +478,7 @@ void loop() {
                       (long)dt, (unsigned long)CTRL_TIMEOUT_MS);
         lastTimeoutLog = now;
       }
-      sleepPH("controller heartbeat timeout");
+      safePausePH("controller heartbeat timeout");
       ctrlSeen = false; // wait for fresh ONLINE/heartbeat
     }
   }
@@ -399,10 +489,11 @@ void loop() {
     publishHeartbeat();
   }
 
-  // periodic polling if enabled
-  if (mqtt.connected() && pollIntervalMs > 0) {
+  // periodic polling if enabled and allowed
+  if (mqtt.connected() && pollIntervalMs > 0 && ph_enabled) {
     if (now - lastPollMs >= pollIntervalMs) {
       lastPollMs = now;
+      Serial.println("[DEBUG] periodic poll now");
       takeOneReadingAndPublish();
     }
   }

@@ -697,55 +697,67 @@ class PhMQTT(_BaseDevice):
     """
     Controls/monitors the ESP32-POE-ISO pH probe node.
 
-    Topics (device publishes):
-      ph/01/status       retained "ONLINE"/"OFFLINE"
-      ph/01/heartbeat    "1" every HEARTBEAT_MS
-      ph/01/ph           latest pH (ASCII, e.g. "7.03")
-      ph/01/reply        reply from passthrough commands
+    ESP32 publishes:
+      <base>/status     retained "ONLINE"/"OFFLINE"
+      <base>/heartbeat  "1" every HEARTBEAT_MS
+      <base>/ph         latest pH reading as ASCII, e.g. "7.03"
+      <base>/reply      replies from passthrough commands / safety notes
 
-    Topics (device subscribes, we publish to):
-      ph/01/cmd:
+    We publish:
+      <base>/cmd
          START:<ms>   begin periodic polling (ms between "R")
          STOP         stop polling
-         ONESHOT      read once and publish
-         <raw>        passthrough to probe ("i", "Status,?", etc.)
-
-    We (Python controller) DO NOT publish to status/heartbeat/etc.
-    We only publish to ph/01/cmd.
+         ONESHOT      take one reading now and publish
+         <raw>        passthrough to the probe ("i", "Status,?", etc.)
     """
 
+    # --- low-level command publisher ---
     def cmd_raw(self, text: str) -> None:
         """
         Send an arbitrary command string to the ESP32 pH node.
-        e.g. "ONESHOT", "START:5000", "STOP", "Cal,mid,7.00", etc.
+        Examples:
+          "ONESHOT"
+          "START:5000"
+          "STOP"
+          "Cal,mid,7.00"
+          "Status,?"
         """
-        # We don't enforce grammar here, just publish.
-        # The ESP32 firmware will sanity-check START:<ms>, etc.
         self._publish("cmd", text, qos=0, retain=False)
 
-    def oneshot(self) -> None:
-        """Request one immediate pH reading (device will publish ph/01/ph)."""
-        self.cmd_raw("ONESHOT")
-
+    # --- high-level convenience commands ---
     def start_poll(self, interval_ms: int) -> None:
-        """
-        Ask ESP32 to start periodic polling.
-        Firmware enforces bounds (min 2000ms, max 99000ms).
-        """
+        """Ask ESP32 to start periodic polling."""
         self.cmd_raw(f"START:{interval_ms}")
 
     def stop_poll(self) -> None:
         """Tell ESP32 to stop periodic polling."""
         self.cmd_raw("STOP")
 
+    # oneshot() is now just sugar around watch_ph(..., trigger="ONESHOT")
+    def oneshot(self, seconds: float = 5.0) -> None:
+        """
+        Request one immediate pH reading and print anything that comes back
+        for up to `seconds`. We subscribe BEFORE sending ONESHOT so we
+        don't miss fast replies.
+        """
+        self.watch_ph(seconds=seconds, trigger_cmd="ONESHOT")
+
+    def watch_poll(self, interval_ms: int, seconds: float = 5.0) -> None:
+        """
+        Start polling at `interval_ms`, watch pH streaming for `seconds`,
+        then STOP polling.
+        """
+        # Subscribe, then START, then wait/print, then STOP, all in one go.
+        self.watch_ph(
+            seconds=seconds,
+            trigger_cmd=f"START:{interval_ms}",
+            stop_after=True,
+        )
+
+    # --- status snapshot ---
     def status(self, seconds: float = 3.0) -> None:
         """
-        Override status() to also listen to ph and reply topics while sampling.
-        We'll temporarily subscribe to:
-          ph/01/status
-          ph/01/heartbeat
-          ph/01/ph
-          ph/01/reply
+        Subscribe temporarily to core telemetry topics and print what comes in.
         """
         topics = [
             f"{self.base}/status",
@@ -755,17 +767,33 @@ class PhMQTT(_BaseDevice):
         ]
         super().status(topics, seconds)
 
-    def watch_ph(self, seconds: float = 5.0) -> None:
+    # --- live watcher ---
+    def watch_ph(
+        self,
+        seconds: float = 5.0,
+        trigger_cmd: str | None = None,
+        stop_after: bool = False,
+    ) -> None:
         """
-        Convenience helper:
-        - subscribe just to live pH readings and replies for a short window
-        - requires ensure_connected() first (loop running)
+        Subscribe to <base>/ph and <base>/reply, print anything we see for `seconds`.
+
+        If trigger_cmd is provided, we:
+          1. subscribe,
+          2. send trigger_cmd (e.g. "ONESHOT" or "START:5000"),
+          3. keep printing for `seconds`.
+
+        If stop_after is True, we'll send "STOP" when we're done (used for watch_poll()).
+
+        Requires ensure_connected() first so the network loop is running.
         """
         c = self._require()
         if not getattr(self, "_loop_running", False):
             raise RuntimeError("watch_ph() requires the background loop. Call ensure_connected() first.")
 
+        # topics to watch
         to_sub = [f"{self.base}/ph", f"{self.base}/reply"]
+
+        # subscribe first so we don't miss fast responses
         for t in to_sub:
             c.subscribe(t, qos=0)
 
@@ -775,12 +803,24 @@ class PhMQTT(_BaseDevice):
             except Exception:
                 print(f"{msg.topic} <{len(msg.payload)} bytes>")
 
-        old = c.on_message
+        old_handler = c.on_message
         c.on_message = _on_msg
+
         try:
+            # Fire the trigger command after subscriptions are active
+            if trigger_cmd is not None:
+                self.cmd_raw(trigger_cmd)
+
+            # Sit and listen
             time.sleep(seconds)
+
+            # Optionally tell device to STOP at the end (good for watch_poll)
+            if stop_after:
+                self.cmd_raw("STOP")
+
         finally:
-            c.on_message = old
+            # Restore old handler and unsubscribe
+            c.on_message = old_handler
             for t in to_sub:
                 c.unsubscribe(t)
 
