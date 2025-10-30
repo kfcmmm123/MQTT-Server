@@ -1,4 +1,4 @@
-# Python MQTT API — ESP32-POE-ISO Device Control
+# Python MQTT API — ESP32 Device Control
 
 This document explains how to use the **Python MQTT API (`iot_mqtt.py`)** to control ESP32-POE-ISO device nodes (pumps, heaters, ultrasonic drivers) via MQTT communication.
 
@@ -13,112 +13,75 @@ Each device uses authentication and a dedicated topic subtree for clean separati
 
 ## Python MQTT Library (`iot_mqtt.py`)
 
-### Quick Example
+### Quick Start
 
-```python
-# iot_mqtt_demo.py
-import time
-from iot_mqtt import start_broker_if_needed, stop_broker, _best_effort_all_off
-from iot_mqtt import PumpMQTT, UltraMQTT, HeatMQTT, PhMQTT, ControllerBeacon
+ 💡 **Use the Jupyter Demo Notebook**
 
-# Optional: start a local Mosquitto on Windows if not already running
-proc = start_broker_if_needed()  # comment if your broker is already running
+For a guided, ready-to-run experience, open **`MQTT_Demo.ipynb`** in Jupyter Notebook.
+It walks through:
 
-# Start controller beacon
-beacon = ControllerBeacon(
-    broker=broker,
-    username="pyctl-controller", password="controller",
-    status_topic="pyctl/status", heartbeat_topic="pyctl/heartbeat",
-    heartbeat_interval=5.0, keepalive=30,
-)
-beacon.start()
+* starting the broker
+* connecting the beacon and all device nodes
+* sending test commands (`ONESHOT`, `START:<ms>`, etc.)
+* collecting and plotting live data (e.g., pH vs time)
 
-# Create clients (replace IP with your broker's LAN IP)
-pumps = PumpMQTT(broker="192.168.0.101", username="pico1",  password="pump",
-                 base_topic="pumps/01", client_id="pyctl-pumps")
-ultra = UltraMQTT(broker="192.168.0.101", username="ultra1", password="ultra",
-                  base_topic="ultra/01", client_id="pyctl-ultra")
-heat  = HeatMQTT(broker="192.168.0.101", username="heat1",  password="heat",
-                 base_topic="heat/01",  client_id="pyctl-heat")
-ph    = PhMQTT(broker="192.168.0.101", username="ph1",    password="ph",
-               base_topic="ph/01",    client_id="pyctl-ph")
+This notebook provides step-by-step examples using the same API described here — perfect for both testing and visualization.
 
-# Connect + start background loops
-pumps.ensure_connected(); ultra.ensure_connected(); heat.ensure_connected()
-time.sleep(1)  # let subscriptions settle
-
-# Quick status snapshots (retained + live)
-pumps.status(seconds=2.0)
-ultra.status(seconds=2.0)
-heat.status(seconds=2.0)
-ph.status(seconds=2.0)
-
-# ---- Control examples ----
-# Pumps
-pumps.on(1); time.sleep(1)
-pumps.on(1, 2000)            # auto-off after 2s
-time.sleep(2.5)
-
-# Ultrasonic
-ultra.on_for(2, 1500)        # ch2 for 1.5s
-time.sleep(2)
-
-# Heaters (PID demo)
-heat.set_base_temp(1, 42.0)  # retained at heat/01/target/1
-heat.pid_on(1)
-
-# Read temp for ~30s
-for _ in range(30):
-    try:
-        t = heat.get_base_temp(1, timeout_s=2.0)
-        print("Heater1 Temp =", t)
-    except TimeoutError:
-        print("Temp read timeout")
-    time.sleep(1)
-
-# Stop PID and ensure OFF
-heat.pid_off(1)
-heat.set_pwm(1, 0)
-heat.off(1)
-
-# pH examples
-ph.oneshot(seconds=3.0)          # single reading
-ph.watch_poll(2000, seconds=6)   # poll every 2s for 6s, auto STOP
-
-# Cleanup
-_best_effort_all_off(pumps, ultra, heat, ph)
-
-pumps.disconnect(); ultra.disconnect(); heat.disconnect(); ph.disconnect()
-beacon.stop()
-
-stop_broker(proc)
-```
 
 ### Command Payloads
 
 | Category    | Command                | Example Payload | Description                           |
 | ----------- | ---------------------- | --------------- | ------------------------------------- |
-| **General** | `ON`, `OFF`, `ON:<ms>` | `ON:2000`       | Turn relay ON for given ms (auto-off) |
+| **Pump + Ultra** | `ON`, `OFF`, `ON:<ms>` | `ON:2000`       | Turn relay ON for given ms (auto-off) |
 | **Heater**  | `PWM:<0–100>`          | `PWM:50`        | Apply PWM % output                    |
 |             | `SET:<temp>`           | `SET:42.0`      | Set PID target                        |
 |             | `PID:ON` / `PID:OFF`   | —               | Enable/disable PID loop               |
 |             | `GET`                  | —               | Request temperature publish           |
+| **pH Probe**| `START:<ms>`           | `START:5000`    | Begin periodic polling (reads pH every `<ms>` milliseconds)    |
+|             | `STOP`                 | —               | Stop periodic polling                                          |
+|             | `ONESHOT`              | —               | Take a single pH reading immediately and publish|
+|             | `<raw command>`  | `i`, `Status,?`, `Cal,mid,7.00` | Forward raw text command to EZO pH board and publish its reply |
 
 ---
 
 ## Topic Map Summary
 
-| Topic               | Direction        | Description               |
-| ------------------- | ---------------- | ------------------------- |
-| `<base>/cmd/<n>`    | Controller → ESP | Command for channel n     |
-| `<base>/state/<n>`  | ESP → Controller | Actuator state            |
-| `<base>/temp/<n>`   | ESP → Controller | Temperature (heater)      |
-| `<base>/target/<n>` | ESP → Controller | PID target                |
-| `<base>/status`     | ESP ↔ Controller | ONLINE/OFFLINE (retained) |
-| `<base>/heartbeat`  | ESP ↔ Controller | “1” periodically          |
-| `pyctl/status`      | Controller ↔ ESP | Controller ONLINE/OFFLINE |
-| `pyctl/heartbeat`   | Controller ↔ ESP | Controller heartbeat      |
+```       
 
+# Controller supervision (beacon)
+pyctl/
+ ├─ status      ↔  controller ONLINE/OFFLINE
+ └─ heartbeat   ↔  controller heartbeat signal
+
+# Pump / Ultrasonic / Heater nodes
+pumps/01/
+ ├─ cmd/1..3       ←  pump control (ON, OFF, ON:<ms>)
+ ├─ state/1..3     →  relay states
+ ├─ status         ↔  ONLINE/OFFLINE
+ └─ heartbeat      ↔  periodic keepalive
+
+ultra/01/
+ ├─ cmd/1..2       ←  ultrasonic control (ON, OFF, ON:<ms>)
+ ├─ state/1..2     →  driver states
+ ├─ status         ↔  ONLINE/OFFLINE
+ └─ heartbeat      ↔  periodic keepalive
+
+heat/01/
+ ├─ cmd/1..2       ←  heater control (ON, OFF, SET:<temp>, PWM:<0–100>, PID:ON/OFF)
+ ├─ temp/1..2      →  measured temperature
+ ├─ target/1..2    →  PID target
+ ├─ status         ↔  ONLINE/OFFLINE
+ └─ heartbeat      ↔  periodic keepalive
+
+# pH Probe node
+ph/01/
+ ├─ cmd            ←  START:<ms>, STOP, ONESHOT, Cal,mid,7.00
+ ├─ ph             →  latest pH reading
+ ├─ reply          →  command response or warning
+ ├─ status         ↔  ONLINE/OFFLINE
+ └─ heartbeat      ↔  periodic keepalive
+
+```
 ---
 
 ## Safety Behavior

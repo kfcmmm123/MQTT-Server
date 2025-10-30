@@ -16,6 +16,7 @@ import socket
 import subprocess
 import threading
 import time
+import random
 from datetime import datetime
 from typing import Callable, Final, Iterable, Optional
 
@@ -37,9 +38,9 @@ def _make_unique_client_id(base: str) -> str:
     Generate a unique client ID by appending hostname and PID.
     Prevents MQTT client ID conflicts when multiple instances run.
     """
-    hostname = socket.gethostname().split('.')[0]  # Use short hostname
-    pid = os.getpid()
-    return f"{base}-{hostname}-{pid}"
+    ts = time.strftime("%m%d_%H%M")
+    rand = f"{random.randint(0, 0xFFFF):04x}"
+    return f"{base}-{ts}-{rand}"
 
 
 # -----------------------------------------------------------------------------
@@ -193,7 +194,7 @@ class ControllerBeacon:
                 if _props and hasattr(_props, 'ReasonString') and _props.ReasonString:
                     print(f"[ctl] Server message: {_props.ReasonString}")
 
-        def _on_disconnect(client: mqtt.Client, _userdata, reason_code: int, properties: Optional[mqtt.Properties] = None) -> None:
+        def _on_disconnect(client: mqtt.Client, _userdata,  disconnect_flags=None, reason_code: int | None = None, properties: Optional[mqtt.Properties] = None) -> None:
             if reason_code == 0:
                 print(f"[ctl] Disconnected normally")
             else:
@@ -519,7 +520,7 @@ class _BaseDevice:
                 if _props and hasattr(_props, 'ReasonString') and _props.ReasonString:
                     print(f"[{self.client_id}] Server message: {_props.ReasonString}")
 
-        def _on_disconnect(client: mqtt.Client, _userdata, reason_code: int, properties: Optional[mqtt.Properties] = None) -> None:
+        def _on_disconnect(client: mqtt.Client, _userdata, disconnect_flags=None, reason_code: int | None = None, properties: Optional[mqtt.Properties] = None) -> None:
             if reason_code == 0:
                 print(f"[{self.client_id}] Disconnected normally")
             else:
@@ -550,7 +551,7 @@ class _BaseDevice:
                 print(f"[{self.client_id}] Connection failed; retrying in {delay} seconds...")
                 time.sleep(delay)
 
-    def ensure_connected(self, retries: int = 5, delay: float = 0.6) -> None:
+    def start(self, retries: int = 5, delay: float = 0.6) -> None:
         """
         Ensure there is a connected client AND that the background loop is running.
         Call this once at the start of your session.
@@ -577,7 +578,7 @@ class _BaseDevice:
     def _require(self) -> mqtt.Client:
         """Raise if no client connection."""
         if self._client is None:
-            raise RuntimeError("Not connected. Call connect()/ensure_connected() first.")
+            raise RuntimeError("Not connected. Call start() first.")
         return self._client
 
     def _publish(self, topic_suffix: str, payload: str, *, qos: int = 0, retain: bool = False) -> None:
@@ -593,7 +594,7 @@ class _BaseDevice:
         """Subscribe temporarily to status/heartbeat or custom topics and print messages."""
         c = self._require()
         if not getattr(self, "_loop_running", False):
-            raise RuntimeError("status() requires the background loop running. Call ensure_connected() first.")
+            raise RuntimeError("status() requires the background loop running. Call start() first.")
 
         to_sub = list(topics) if topics else [f"{self.base}/status", f"{self.base}/heartbeat"]
         for t in to_sub:
@@ -617,11 +618,11 @@ class _BaseDevice:
     def watch(self, on_message: Optional[Callable[[str, bytes], None]] = None) -> None:
         """
         Start a background watcher that prints all messages under base/#.
-        Requires ensure_connected() so the background loop is running.
+        Requires start() so the background loop is running.
         """
         c = self._require()
         if not getattr(self, "_loop_running", False):
-            raise RuntimeError("watch() requires the background loop running. Call ensure_connected() first.")
+            raise RuntimeError("watch() requires the background loop running. Call start() first.")
 
         self._watch_stop.clear()
 
@@ -693,7 +694,7 @@ class PumpMQTT(_BaseDevice):
         _check_range(channel, 1, self.PUMP_COUNT, "channel")
         c = self._require()
         if not getattr(self, "_loop_running", False):
-            raise RuntimeError("toggle() requires the background loop. Call ensure_connected() first.")
+            raise RuntimeError("toggle() requires the background loop. Call start() first.")
 
         state_topic = f"{self.base}/state/{channel}"
         got: dict[str, Optional[str]] = {"val": None}
@@ -788,7 +789,7 @@ class HeatMQTT(_BaseDevice):
         _check_range(channel, 1, self.HEAT_COUNT, "heater number")
         c = self._require()
         if not getattr(self, "_loop_running", False):
-            raise RuntimeError("get_base_temp() requires the background loop. Call ensure_connected() first.")
+            raise RuntimeError("get_base_temp() requires the background loop. Call start() first.")
         topic = f"{self.base}/temp/{channel}"
         result: dict[str, Optional[float]] = {"val": None}
 
@@ -818,7 +819,7 @@ class HeatMQTT(_BaseDevice):
         _check_range(channel, 1, self.HEAT_COUNT, "heater number")
         c = self._require()
         if not getattr(self, "_loop_running", False):
-            raise RuntimeError("wait_temp() requires the background loop. Call ensure_connected() first.")
+            raise RuntimeError("wait_temp() requires the background loop. Call start() first.")
         topic = f"{self.base}/temp/{channel}"
         result: dict[str, Optional[float]] = {"val": None}
 
@@ -961,7 +962,7 @@ class PhMQTT(_BaseDevice):
         """
         c = self._require()
         if not getattr(self, "_loop_running", False):
-            raise RuntimeError("watch_ph() requires the background loop. Call ensure_connected() first.")
+            raise RuntimeError("watch_ph() requires the background loop. Call start() first.")
 
         topic_ph = f"{self.base}/ph"
         topic_reply = f"{self.base}/reply"
@@ -1059,10 +1060,10 @@ if __name__ == "__main__":
         client_id="pyctl-ph",
     )
 
-    pumps.ensure_connected()
-    ultra.ensure_connected()
-    heat.ensure_connected()
-    ph.ensure_connected()
+    pumps.start()
+    ultra.start()
+    heat.start()
+    ph.start()
 
     try:
         # --------- Pumps demo ---------

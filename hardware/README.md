@@ -10,7 +10,7 @@ This folder contains the **3D-printable designs** and assembly instructions for 
 
 ---
 
-## CAD Files
+## Folder structure 
 
 ```
 hardware/
