@@ -23,7 +23,7 @@
       ph/01/status      retained "ONLINE"/"OFFLINE"
       ph/01/heartbeat   "1" every HEARTBEAT_MS
 
-  Supervision topics (ESP32 subscribes, Python publishes):
+  Controller supervision (subscribe):
       pyctl/status      retained "ONLINE"/"OFFLINE" (controller LWT)
       pyctl/heartbeat   "1" periodically
 
@@ -367,31 +367,26 @@ void onNetEvent(WiFiEvent_t event) {
   switch (event) {
   case ARDUINO_EVENT_ETH_START:
     ETH.setHostname("esp32-ph");
-    Serial.println("[ETH] START");
+    Serial.println("[ETH] Started");
     break;
-
   case ARDUINO_EVENT_ETH_CONNECTED:
-    Serial.println("[ETH] LINK UP");
+    Serial.println("[ETH] Connected (link up)");
     break;
-
   case ARDUINO_EVENT_ETH_GOT_IP:
     eth_ready = true;
-    Serial.print("[ETH] IP: ");
+    Serial.print("[ETH] IP obtained: ");
     Serial.println(ETH.localIP());
     break;
-
   case ARDUINO_EVENT_ETH_DISCONNECTED:
-    Serial.println("[ETH] LINK DOWN");
+    Serial.println("[ETH] Disconnected (link down)");
     eth_ready = false;
-    safePausePH("Ethernet link down");
+    allOff("Ethernet link down");
     break;
-
   case ARDUINO_EVENT_ETH_STOP:
-    Serial.println("[ETH] STOP");
+    Serial.println("[ETH] Stopped");
     eth_ready = false;
-    safePausePH("Ethernet stopped");
+    allOff("Ethernet stopped");
     break;
-
   default:
     break;
   }

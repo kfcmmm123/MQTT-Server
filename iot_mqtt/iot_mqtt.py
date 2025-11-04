@@ -3,6 +3,7 @@
 # - Pumps (SparkFun Qwiic Relays)
 # - Ultrasonic drivers (SparkFun Qwiic Relays)
 # - Heaters (SparkFun Dual SSR)
+# - Biologic ports (I2C MCP23017)
 #
 # Requires: paho-mqtt>=1.6 (v2 callback API)
 
@@ -28,7 +29,7 @@ from paho.mqtt import client as mqtt
 PUMP_COUNT: Final[int] = 3
 ULTRA_COUNT: Final[int] = 2
 HEAT_COUNT: Final[int] = 2
-
+BIO_COUNT: Final[int] = 16
 
 # -----------------------------------------------------------------------------
 # Helper: Generate unique client IDs
@@ -716,6 +717,7 @@ class PumpMQTT(_BaseDevice):
         self._publish(f"cmd/{channel}", new_val)
 
     def status(self, seconds: float = 3.0) -> None:
+        """Subscribe temporarily to status/heartbeat or custom topics and print messages."""
         topics = [f"{self.base}/status", f"{self.base}/heartbeat"] + [
             f"{self.base}/state/{i}" for i in range(1, PUMP_COUNT + 1)
         ]
@@ -737,6 +739,7 @@ class UltraMQTT(_BaseDevice):
         self._publish(f"cmd/{channel}", "OFF", retain=False)
 
     def status(self, seconds: float = 3.0) -> None:
+        """Subscribe temporarily to status/heartbeat or custom topics and print messages."""
         topics = [f"{self.base}/status", f"{self.base}/heartbeat"] + [
             f"{self.base}/state/{i}" for i in range(1, ULTRA_COUNT + 1)
         ]
@@ -749,14 +752,17 @@ class HeatMQTT(_BaseDevice):
 
     # Basic ON/OFF & manual PWM
     def on(self, channel: int) -> None:
+        """Turn on a SSR channel"""
         _check_range(channel, 1, self.HEAT_COUNT, "heater number")
         self._publish(f"cmd/{channel}", "ON")
 
     def off(self, channel: int) -> None:
+        """Turn off a SSR channel"""
         _check_range(channel, 1, self.HEAT_COUNT, "heater number")
         self._publish(f"cmd/{channel}", "OFF")
 
     def set_pwm(self, channel: int, percent: float) -> None:
+        """Set PWM on a SSR channel"""
         _check_range(channel, 1, self.HEAT_COUNT, "heater number")
         p = max(0, min(100, int(round(percent))))
         self._publish(f"cmd/{channel}", f"PWM:{p}")
@@ -772,10 +778,12 @@ class HeatMQTT(_BaseDevice):
         self.set_base_temp(channel, temp_c)
 
     def pid_on(self, channel: int) -> None:
+        """Start PID control on a SSR channel"""
         _check_range(channel, 1, self.HEAT_COUNT, "heater number")
         self._publish(f"cmd/{channel}", "PID:ON")
 
     def pid_off(self, channel: int) -> None:
+        """Stop PID control on a SSR channel"""
         _check_range(channel, 1, self.HEAT_COUNT, "heater number")
         self._publish(f"cmd/{channel}", "PID:OFF")
 
@@ -844,6 +852,7 @@ class HeatMQTT(_BaseDevice):
         return float(result["val"])
 
     def status(self, seconds: float = 3.0) -> None:
+        """Subscribe temporarily to status/heartbeat or custom topics and print messages."""
         topics = [f"{self.base}/status", f"{self.base}/heartbeat"] \
                + [f"{self.base}/state/{i}" for i in range(1, HEAT_COUNT + 1)] \
                + [f"{self.base}/set/{i}"  for i in range(1, HEAT_COUNT + 1)] \
@@ -927,9 +936,7 @@ class PhMQTT(_BaseDevice):
 
     # --- status snapshot ---
     def status(self, seconds: float = 3.0) -> None:
-        """
-        Subscribe temporarily to core telemetry topics and print what comes in.
-        """
+        """Subscribe temporarily to status/heartbeat or custom topics and print messages."""
         topics = [
             f"{self.base}/status",
             f"{self.base}/heartbeat",
@@ -1008,6 +1015,27 @@ class PhMQTT(_BaseDevice):
 
         return data
 
+class BioMQTT(_BaseDevice): 
+    """Controls 2 × 8 channel relay for 16 Biologic ports."""
+    BIO_COUNT: Final[int] = BIO_COUNT  # type: ignore[name-defined]
+
+    def on(self, channel: int) -> None:
+        """Turn on a relay channel"""
+        _check_range(channel, 1, self.BIO_COUNT, "biologic number")
+        self._publish(f"cmd/{channel}", "ON")
+
+    def off(self, channel: int) -> None:
+        """Turn off a relay channel"""
+        _check_range(channel, 1, self.BIO_COUNT, "biologic number")
+        self._publish(f"cmd/{channel}", "OFF")
+
+    def status(self, seconds: float = 3.0) -> None:
+        """Subscribe temporarily to status/heartbeat or custom topics and print messages."""
+        topics = [f"{self.base}/status", f"{self.base}/heartbeat"] + [
+            f"{self.base}/state/{i}" for i in range(1, BIO_COUNT + 1)
+        ]
+        super().status(topics, seconds)
+
 # -----------------------------------------------------------------------------
 # Example usage (only when running this file directly)
 # -----------------------------------------------------------------------------
@@ -1059,11 +1087,19 @@ if __name__ == "__main__":
         base_topic="ph/01",
         client_id="pyctl-ph",
     )
+    bio = BioMQTT(
+        broker=broker,
+        username="bio1",
+        password="bio",
+        base_topic="bio/01",
+        client_id="pyctl-bio",
+    )
 
     pumps.start()
     ultra.start()
     heat.start()
     ph.start()
+    bio.start()
 
     try:
         # --------- Pumps demo ---------
@@ -1103,6 +1139,13 @@ if __name__ == "__main__":
         # stop periodic polling
         ph.stop_poll()
 
+        # --------- Biologic demo ---------
+        # turn on biologic channel 1 
+        bio.on(1)
+        time.sleep(10) 
+        # turn off biologic channel 1
+        bio.off(1)
+
     finally:
         # Best-effort tidy OFF on graceful exit
         _best_effort_all_off(pumps, ultra, heat, ph)
@@ -1111,6 +1154,7 @@ if __name__ == "__main__":
         ultra.disconnect()
         heat.disconnect()
         ph.disconnect()
+        bio.disconnect()
 
         beacon.stop()
         stop_broker(proc)

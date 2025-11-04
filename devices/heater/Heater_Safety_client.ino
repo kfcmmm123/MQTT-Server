@@ -54,6 +54,7 @@ const char* CTRL_HEARTBEAT_TOPIC = "pyctl/heartbeat";  // "1" periodically
 const uint32_t CTRL_TIMEOUT_MS   = 25000;  // if no controller beat for this long -> ALL OFF
 const uint32_t MQTT_DOWN_OFF_MS  = 20000;  // if reconnect takes longer than this -> ALL OFF
 const uint32_t MAX_ON_LEASE_MS   = 60000;  // plain "ON" max lease (0 disables)
+const uint32_t HEARTBEAT_MS = 15000; // ESP heartbeat cadence
 
 /************ Ethernet (Olimex ESP32-POE-ISO) ************/
 #define ETH_PHY_TYPE   ETH_PHY_LAN8720
@@ -62,16 +63,6 @@ const uint32_t MAX_ON_LEASE_MS   = 60000;  // plain "ON" max lease (0 disables)
 #define ETH_PHY_MDIO   18
 #define ETH_POWER_PIN  12
 #define ETH_CLK_MODE   ETH_CLOCK_GPIO17_OUT
-
-/************ Relay / device config ************/
-#define RELAY_ADDR   0x0A     // Qwiic Dual SSR I2C address
-#define HEATER_COUNT 2
-#define HEARTBEAT_MS 15000
-#define TIMED_SLOTS  4
-
-// ADS1015 thermistor channels
-#define TH_CH_1  0           // A0
-#define TH_CH_2  3           // A1
 
 /************ Safety (temperature rate brake) ************/
 static inline float ema(float prev, float cur, float alpha = 0.05f) {
@@ -83,6 +74,15 @@ const uint32_t IGNORE_AFTER_BOOT_MS = 3000;     // grace period on boot
 const float    MIN_DT_FOR_SLOPE_S   = 0.25f;    // ≥250 ms window
 const uint32_t PWM_MEMORY_MS        = 3000;     // consider heating if PWM>0 in last 3s
 const uint32_t BRAKE_LOG_DEBOUNCE   = 500;      // min ms between brake logs
+
+/************ Relay / device config ************/
+#define RELAY_ADDR   0x0A     // Qwiic Dual SSR I2C address
+#define HEATER_COUNT 2
+#define TIMED_SLOTS  4
+
+// ADS1015 thermistor channels
+#define TH_CH_1  0           // A0
+#define TH_CH_2  3           // A1
 
 /************ Globals ************/
 WiFiClient   netClient;
@@ -431,31 +431,33 @@ void onMqtt(char* topic, byte* payload, unsigned int len) {
   }
 }
 
-/************ Ethernet events (fail-safe on link down) ************/
+/************ Ethernet events ************/
 void onNetEvent(WiFiEvent_t event) {
   switch (event) {
-    case ARDUINO_EVENT_ETH_START:
-      ETH.setHostname("esp32-heat");
-      Serial.println("[ETH] Started");
-      break;
-    case ARDUINO_EVENT_ETH_CONNECTED:
-      Serial.println("[ETH] Link up");
-      break;
-    case ARDUINO_EVENT_ETH_GOT_IP:
-      eth_ready = true;
-      Serial.print("[ETH] IP: "); Serial.println(ETH.localIP());
-      break;
-    case ARDUINO_EVENT_ETH_DISCONNECTED:
-      Serial.println("[ETH] Link down");
-      eth_ready = false;
-      allOff("Ethernet link down");
-      break;
-    case ARDUINO_EVENT_ETH_STOP:
-      Serial.println("[ETH] Stopped");
-      eth_ready = false;
-      allOff("Ethernet stopped");
-      break;
-    default: break;
+  case ARDUINO_EVENT_ETH_START:
+    ETH.setHostname("esp32-heat");
+    Serial.println("[ETH] Started");
+    break;
+  case ARDUINO_EVENT_ETH_CONNECTED:
+    Serial.println("[ETH] Connected (link up)");
+    break;
+  case ARDUINO_EVENT_ETH_GOT_IP:
+    eth_ready = true;
+    Serial.print("[ETH] IP obtained: ");
+    Serial.println(ETH.localIP());
+    break;
+  case ARDUINO_EVENT_ETH_DISCONNECTED:
+    Serial.println("[ETH] Disconnected (link down)");
+    eth_ready = false;
+    allOff("Ethernet link down");
+    break;
+  case ARDUINO_EVENT_ETH_STOP:
+    Serial.println("[ETH] Stopped");
+    eth_ready = false;
+    allOff("Ethernet stopped");
+    break;
+  default:
+    break;
   }
 }
 
@@ -626,8 +628,8 @@ void loop() {
   if (mqtt.connected()) {
     if (now - lastBeat > HEARTBEAT_MS) {
       lastBeat = now;
-      String tb = String(DEV_BASE) + "/heartbeat";
-      mqtt.publish(tb.c_str(), "1");
+      String topic = String(DEV_BASE) + "/heartbeat";
+      mqtt.publish(topic.c_str(), "1");
       Serial.println("[HEARTBEAT] Sent");
     }
     if (now - lastTelem > 3000) {
