@@ -2,7 +2,7 @@
 **Modular MQTT-Based Automation for Pumps, Ultrasonic Drivers, and Heaters**
 
 This repository hosts a **multi-device IoT control platform** built on **ESP32-POE-ISO** boards communicating via **MQTT over Ethernet**.  
-Each ESP32 node acts as a standalone controller for a subsystem (Pump, Ultrasonic, or Heater), while a Python controller (`iot_mqtt.py`) provides orchestration, supervision, and visualization.
+Each ESP32 node acts as a standalone controller for a subsystem (Pump, Ultrasonic, Heater, pH probe, or Biologic), while a Python controller (`iot_mqtt.py`) provides orchestration, supervision, and visualization.
 
 ---
 
@@ -54,6 +54,10 @@ MQTT-Server/
 │   │   ├── pH_Safety_client.ino     # Safety-enabled pH firmware
 │   │   └── README.md                # pH setup guide
 │   │
+│   ├── biologic/                    # Biologic controller
+│   │   ├── Biologic_Safety_client.ino          # Safety-enabled biologic firmware
+│   │   └── README.md                # Biologic setup guide
+│   │
 │   └── heater/                      # Heater control with PID
 │       ├── Heater_client.ino        # Main heater firmware
 │       ├── Heater_Safety_client.ino # Safety-enabled version
@@ -79,20 +83,20 @@ MQTT-Server/
 ## System Architecture
 
 ```text
-                            ┌─────────────────────────────┐
-                            │         MQTT Broker         │
-                            │        (Mosquitto)          │
-                            │       Port 1883 (TCP)       │
-                            └──────────────┬──────────────┘
-                                           │
-                                    Ethernet TCP/IP
-          ┌─────────────────────┬──────────┴─────────┬─────────────────────┐
-          │                     │                    │                     │
-┌─────────┴──────────┐  ┌───────┴────────┐   ┌───────┴─────────┐   ┌───────┴─────────┐
-│ ESP32-POE-ISO      │  │ ESP32-POE-ISO  │   │ ESP32-POE-ISO   │   │ ESP32-POE-ISO   │
-│ Node: pumps/01     │  │ Node: ultra/01 │   │ Node: heat/01   │   │ Node: ph/01     │
-│ Relays (pumps)     │  │ Relays (ultra) │   │ SSR + ADS1015   │   │ EZO pH meter    │
-└────────────────────┘  └────────────────┘   └─────────────────┘   └─────────────────┘
+                                 ┌─────────────────────────────┐
+                                 │         MQTT Broker         │
+                                 │        (Mosquitto)          │
+                                 │       Port 1883 (TCP)       │
+                                 └──────────────┬──────────────┘
+                                                │
+                                        Ethernet TCP/IP
+         ┌──────────────────┬───────────────────┼──────────────────┬──────────────────┐
+         │                  │                   │                  │                  │
+┌────────┴───────┐  ┌───────┴────────┐  ┌───────┴───────┐  ┌───────┴───────┐  ┌───────┴───────┐
+│ ESP32-POE-ISO  │  │ ESP32-POE-ISO  │  │ ESP32-POE-ISO │  │ ESP32-POE-ISO │  │ ESP32-POE-ISO │
+│ Node: pumps/01 │  │ Node: ultra/01 │  │ Node: heat/01 │  │ Node: ph/01   │  │ Node: bio/01  │
+│ Relays (pumps) │  │ Relays (ultra) │  │ SSR + ADS1015 │  │ EZO pH meter  │  │ 16 chan relay │
+└────────────────┘  └────────────────┘  └───────────────┘  └───────────────┘  └───────────────┘
 
 ````
 
@@ -106,6 +110,7 @@ MQTT-Server/
 | **Ultrasonic Node** | Controls 2 ultrasonic driver boards via Qwiic relay    | `devices/ultrasonic/Ultrasonic_Safety_client.ino` |
 | **Heater Node**     | Controls 2 heaters via Qwiic SSR + thermistor sensing + PID + safety brake | `devices/heater/Heater_Safety_client.ino`    |
 | **pH Node**         | Publishes pH readings; supports oneshot and periodic polling with safety | `devices/ph/pH_Safety_client.ino` |
+| **Biologic Node**   | Controls 16 channels relay via MCP23017 I²C expander | `devices/biologic/Biologic_Safety_client.ino` |
 
 Each firmware implements MQTT topic handlers, safety gating, and local timers for timed activation (`ON:<ms>`).
 
@@ -184,6 +189,7 @@ sudo apt install mosquitto mosquitto-clients
    mosquitto_passwd    passwd ultra1
    mosquitto_passwd    passwd heat1
    mosquitto_passwd    passwd ph1
+   mosquitto_passwd    passwd bio1
    ```
 
 > Note: If you use custom usernames/passwords, update both `mosquitto_config/aclfile.txt` and the credentials in the notebook/code.

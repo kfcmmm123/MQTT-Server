@@ -15,11 +15,15 @@ topic write pyctl/heartbeat
 topic write pumps/01/cmd/#
 topic write ultra/01/cmd/#
 topic write heat/01/cmd/#
+topic write ph/01/cmd/#
+topic write bio/01/cmd/#
 
 # Controller can read all states & telemetry:
 topic read pumps/01/#
 topic read ultra/01/#
 topic read heat/01/#
+topic read ph/01/#
+topic read bio/01/#
 topic read pyctl/#
 
 
@@ -70,16 +74,31 @@ topic write heat/01/target/#
 topic read pyctl/status
 topic read pyctl/heartbeat
 
+
 # === pH ESP32 =========================================
 user ph1
 # Receives control commands
 topic read ph/01/cmd/#
 
 # Publishes sensor and system data
+topic write ph/01/ph
 topic write ph/01/status
 topic write ph/01/heartbeat
-topic write ph/01/ph
 topic write ph/01/reply
+
+# Monitors controller beacon
+topic read pyctl/status
+topic read pyctl/heartbeat
+
+
+# === Biologic ESP32 =========================================
+user bio1
+# Receives control commands
+topic read bio/01/cmd/#
+
+# Publishes sensor and system data
+topic write bio/01/status
+topic write bio/01/heartbeat
 
 # Monitors controller beacon
 topic read pyctl/status

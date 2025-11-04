@@ -13,6 +13,8 @@ Topics:
 | `pumps/01/state/<n>` | ESP→PC | `ON` · `OFF`              | yes      | Last relay state       |
 | `pumps/01/status`    | ESP→PC | `ONLINE` · `OFFLINE`      | yes      | Node availability      |
 | `pumps/01/heartbeat` | ESP→PC | `1` (fixed)               | no       | Every ~15 s            |
+| `pyctl/status`     | PC↔ESP | `ONLINE` · `OFFLINE` | yes      | Controller supervision (LWT)       |
+| `pyctl/heartbeat`  | PC↔ESP | `1`                  | no       | Periodic heartbeat from controller |
 
 Command semantics (to `cmd/<n>`):
 - `ON` — turn channel `<n>` on until explicit `OFF` or watchdog timeout

@@ -261,7 +261,7 @@ void setup() {
   Wire.setClock(400000);
   Serial.println("[I2C] Initialized for MCP23017");
 
-  Wire.onEvent(onI2CEvent);
+  Wire.onEvent(onNetEvent);
   Serial.println("[ETH] Initializing Ethernet...");
   ETH.begin(ETH_PHY_TYPE, ETH_PHY_ADDR, ETH_PHY_MDC, ETH_PHY_MDIO,
             ETH_POWER_PIN, ETH_CLK_MODE);

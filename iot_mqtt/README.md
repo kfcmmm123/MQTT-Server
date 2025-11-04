@@ -1,13 +1,13 @@
 # Python MQTT API — ESP32 Device Control
 
-This document explains how to use the **Python MQTT API (`iot_mqtt.py`)** to control ESP32-POE-ISO device nodes (pumps, heaters, ultrasonic drivers) via MQTT communication.
+This document explains how to use the **Python MQTT API (`iot_mqtt.py`)** to control ESP32-POE-ISO device nodes (pumps, heaters, ultrasonic, pH probe, biologic channels) via MQTT communication.
 
 ## Overview
 
 The MQTT network consists of:
 - **Broker:** Mosquitto server (usually on your PC or Raspberry Pi)
 - **Controller:** Python beacon (publishes heartbeat + commands)
-- **ESP32 Nodes:** individual clients (pumps, ultrasonic, heater)
+- **ESP32 Nodes:** individual clients (pumps, heaters, ultrasonic, pH probe, biologic channels)
 
 Each device uses authentication and a dedicated topic subtree for clean separation.
 
@@ -41,6 +41,7 @@ This notebook provides step-by-step examples using the same API described here �
 |             | `STOP`                 | —               | Stop periodic polling                                          |
 |             | `ONESHOT`              | —               | Take a single pH reading immediately and publish|
 |             | `<raw command>`  | `i`, `Status,?`, `Cal,mid,7.00` | Forward raw text command to EZO pH board and publish its reply |
+| **Biologic** | `ON`, `OFF`           | —               | Turn relay channel ON  |
 
 ---
 
@@ -50,22 +51,24 @@ This notebook provides step-by-step examples using the same API described here �
 
 # Controller supervision (beacon)
 pyctl/
- ├─ status      ↔  controller ONLINE/OFFLINE
- └─ heartbeat   ↔  controller heartbeat signal
+ ├─ status         ↔  controller ONLINE/OFFLINE
+ └─ heartbeat      ↔  controller heartbeat signal
 
-# Pump / Ultrasonic / Heater nodes
+# Pump node
 pumps/01/
  ├─ cmd/1..3       ←  pump control (ON, OFF, ON:<ms>)
  ├─ state/1..3     →  relay states
  ├─ status         ↔  ONLINE/OFFLINE
  └─ heartbeat      ↔  periodic keepalive
 
+# Ultrasonic node
 ultra/01/
  ├─ cmd/1..2       ←  ultrasonic control (ON, OFF, ON:<ms>)
  ├─ state/1..2     →  driver states
  ├─ status         ↔  ONLINE/OFFLINE
  └─ heartbeat      ↔  periodic keepalive
 
+# Heater node
 heat/01/
  ├─ cmd/1..2       ←  heater control (ON, OFF, SET:<temp>, PWM:<0–100>, PID:ON/OFF)
  ├─ temp/1..2      →  measured temperature
@@ -78,6 +81,13 @@ ph/01/
  ├─ cmd            ←  START:<ms>, STOP, ONESHOT, Cal,mid,7.00
  ├─ ph             →  latest pH reading
  ├─ reply          →  command response or warning
+ ├─ status         ↔  ONLINE/OFFLINE
+ └─ heartbeat      ↔  periodic keepalive
+
+# Biologic node
+bio/01/
+ ├─ cmd/1..16      ←  channel control (ON, OFF)
+ ├─ state/1..16    →  relay states
  ├─ status         ↔  ONLINE/OFFLINE
  └─ heartbeat      ↔  periodic keepalive
 
